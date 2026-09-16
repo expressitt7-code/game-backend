@@ -1,14 +1,13 @@
-
 {
-  "name": "game-backend",
+  "name": "telegram-game-backend",
   "version": "1.0.0",
-  "description": "Prediction Game Server",
+  "description": "Backend for Telegram Game",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.18.2"
   }
 }
