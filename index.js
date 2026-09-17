@@ -13,14 +13,14 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ MongoDB Successfully Connected!'))
     .catch(err => console.log('❌ MongoDB Connection Error:', err));
 
-// 1. User Schema (Balance ke liye)
+// 1. User Schema 
 const UserSchema = new mongoose.Schema({
     telegramId: { type: String, required: true, unique: true },
     balance: { type: Number, default: 1000 }
 });
 const User = mongoose.model('User', UserSchema);
 
-// 2. 🌟 NAYA: Game History Schema (Results permanently save karne ke liye)
+// 2. Game History Schema
 const ResultSchema = new mongoose.Schema({
     period: { type: Number, required: true, unique: true },
     number: Number,
@@ -28,24 +28,30 @@ const ResultSchema = new mongoose.Schema({
 });
 const Result = mongoose.model('Result', ResultSchema);
 
+// 3. 🌟 NAYA: My History (User Bets) Schema
+const BetSchema = new mongoose.Schema({
+    telegramId: String,
+    period: Number,
+    selection: String,
+    amount: Number,
+    status: { type: String, default: 'Pending' } // Pending, Won, Lost
+});
+const Bet = mongoose.model('Bet', BetSchema);
+
 let countdown = 60;
 let currentPeriod = 20260917001;
 let gameHistory = [];
 let pendingBets = []; 
 
-// Server start hote hi Database se purani history wapas lana
+// Server start hote hi purani game history load karna
 async function loadHistory() {
     try {
-        // Pichle 10 results database se nikalo
         const pastResults = await Result.find().sort({ period: -1 }).limit(10);
         if (pastResults.length > 0) {
             gameHistory = pastResults;
-            currentPeriod = pastResults[0].period + 1; // Period wahan se shuru hoga jahan ruka tha
-            console.log(`✅ History loaded. Next Period: ${currentPeriod}`);
+            currentPeriod = pastResults[0].period + 1; 
         }
-    } catch (err) {
-        console.log("History load karne me error:", err);
-    }
+    } catch (err) {}
 }
 loadHistory();
 
@@ -56,13 +62,10 @@ setInterval(async () => {
         const resColor = colors[Math.floor(Math.random() * colors.length)];
         const resNumber = Math.floor(Math.random() * 10);
         
-        // 🌟 NAYA: Har 1 min me jo result aayega, use Database me save karna
         try {
             const newResult = new Result({ period: currentPeriod, number: resNumber, color: resColor });
             await newResult.save();
-        } catch (err) {
-            console.log("Result DB me save nahi hua:", err);
-        }
+        } catch (err) {}
 
         gameHistory.unshift({ period: currentPeriod, number: resNumber, color: resColor });
         if(gameHistory.length > 10) gameHistory.pop();
@@ -80,6 +83,11 @@ setInterval(async () => {
                 if (won) {
                     let winAmount = bet.betAmount * multiplier;
                     await User.updateOne({ telegramId: bet.telegramId }, { $inc: { balance: winAmount } });
+                    // DB me status Won karna
+                    await Bet.findByIdAndUpdate(bet.dbId, { status: 'Won' });
+                } else {
+                    // DB me status Lost karna
+                    await Bet.findByIdAndUpdate(bet.dbId, { status: 'Lost' });
                 }
             }
         }
@@ -109,6 +117,17 @@ app.post('/get-balance', async (req, res) => {
     }
 });
 
+// 🌟 NAYA API: User ki My History lane ke liye
+app.post('/my-history', async (req, res) => {
+    const { telegramId } = req.body;
+    try {
+        const bets = await Bet.find({ telegramId: String(telegramId) }).sort({ period: -1 }).limit(20);
+        res.json({ success: true, history: bets });
+    } catch (error) {
+        res.json({ success: false });
+    }
+});
+
 app.post('/bet', async (req, res) => {
     const { telegramId, betSelection, betAmount, period } = req.body;
     try {
@@ -127,7 +146,12 @@ app.post('/bet', async (req, res) => {
         user.balance -= betAmount;
         await user.save();
 
-        pendingBets.push({ telegramId: safeId, betSelection, betAmount, period });
+        // NAYA: Bet ko database me save karna
+        const newBet = new Bet({ telegramId: safeId, period, selection: betSelection, amount: betAmount });
+        await newBet.save();
+
+        // Memory me id ke sath save karna taaki result aane par update ho sake
+        pendingBets.push({ dbId: newBet._id, telegramId: safeId, betSelection, betAmount, period });
 
         res.json({ success: true, newBalance: user.balance });
     } catch (error) {
