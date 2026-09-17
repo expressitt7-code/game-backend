@@ -1,67 +1,116 @@
-
 const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Server ki Memory (Database lagne tak yahan data rahega)
-let countdown = 60; // 1 Minute ka timer
-let currentPeriod = 20260917001; // Period ID
-let gameHistory = []; 
+// ✅ Aapka Final MongoDB Connection Link (with Username & Password)
+const MONGO_URI = "mongodb+srv://New_admin:h2VMUsM7a3W39J4E@cluster0.ydaktjx.mongodb.net/wingame?retryWrites=true&w=majority&appName=Cluster0";
 
-// Server par Timer chalana (Har 1 second)
-setInterval(() => {
+// MongoDB se connect karna
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('✅ MongoDB Successfully Connected!'))
+    .catch(err => console.log('❌ MongoDB Connection Error:', err));
+
+// User ka Schema (Database ka structure)
+const UserSchema = new mongoose.Schema({
+    telegramId: { type: String, required: true, unique: true },
+    balance: { type: Number, default: 1000 } // Naye user ko 1000 coin milenge
+});
+const User = mongoose.model('User', UserSchema);
+
+// Server ki Memory
+let countdown = 60;
+let currentPeriod = 20260917001;
+let gameHistory = [];
+let pendingBets = []; 
+
+// Game ka Timer aur Server-side Win/Loss Logic
+setInterval(async () => {
     countdown--;
     if (countdown <= 0) {
-        // Naya result nikalna
+        // Result Generate karna
         const colors = ['Red', 'Green', 'Violet'];
         const resColor = colors[Math.floor(Math.random() * colors.length)];
-        const resNumber = Math.floor(Math.random() * 10); // 0-9 random number
+        const resNumber = Math.floor(Math.random() * 10);
         
-        // History mein add karna
-        gameHistory.unshift({
-            period: currentPeriod,
-            number: resNumber,
-            color: resColor
-        });
+        gameHistory.unshift({ period: currentPeriod, number: resNumber, color: resColor });
+        if(gameHistory.length > 10) gameHistory.pop();
 
-        // Sirf last 10 records rakhna
-        if(gameHistory.length > 10) {
-            gameHistory.pop();
+        // 🏆 WINNING LOGIC (Database mein paise add karna)
+        for (let bet of pendingBets) {
+            if (bet.period === currentPeriod) {
+                let won = false;
+                let multiplier = 0;
+                
+                if (bet.betSelection === resColor) { won = true; multiplier = 2; }
+                let bs = resNumber > 4 ? "Big" : "Small";
+                if (bet.betSelection === bs) { won = true; multiplier = 2; }
+                if (bet.betSelection === resNumber.toString()) { won = true; multiplier = 9; }
+
+                if (won) {
+                    let winAmount = bet.betAmount * multiplier;
+                    // Jeete huye user ka balance database mein badhana
+                    await User.updateOne({ telegramId: bet.telegramId }, { $inc: { balance: winAmount } });
+                }
+            }
         }
+        // Purani bets delete karna (naye round ke liye)
+        pendingBets = pendingBets.filter(b => b.period !== currentPeriod);
 
-        // Agle round ki tayyari
         currentPeriod++;
-        countdown = 60; // Timer reset
+        countdown = 60;
     }
 }, 1000);
 
-// API: Frontend ko timer aur history dena
+// API: Game ka Status lena
 app.get('/game-status', (req, res) => {
-    res.json({
-        period: currentPeriod,
-        time: countdown,
-        results: gameHistory
-    });
+    res.json({ period: currentPeriod, time: countdown, results: gameHistory });
 });
 
-// API: Bet receive karna
-app.post('/bet', (req, res) => {
+// API: User ka Balance check karna
+app.post('/get-balance', async (req, res) => {
+    const { telegramId } = req.body;
+    try {
+        let user = await User.findOne({ telegramId });
+        if (!user) {
+            user = new User({ telegramId, balance: 1000 }); // Naya Account Banega
+            await user.save();
+        }
+        res.json({ success: true, balance: user.balance });
+    } catch (error) {
+        res.json({ success: false, message: "DB Error" });
+    }
+});
+
+// API: Bet Lagana
+app.post('/bet', async (req, res) => {
     const { telegramId, betSelection, betAmount, period } = req.body;
     
-    console.log(`User ${telegramId} ne ${betSelection} par ₹${betAmount} lagaye. (Period: ${period})`);
+    try {
+        let user = await User.findOne({ telegramId });
+        if (!user) return res.json({ success: false, message: "User not found!" });
+        
+        if (user.balance < betAmount) {
+            return res.json({ success: false, message: "Insufficient Balance!" });
+        }
 
-    // Dummy logic: Balance se paise kaat kar wapas bhej raha hai
-    res.json({
-        success: true,
-        message: `Bet successfully placed on ${betSelection}!`,
-        newBalance: 1000 - betAmount // Mock balance update
-    });
+        // Database se paise kaatna
+        user.balance -= betAmount;
+        await user.save();
+
+        // Server ki line mein bet laga dena (taaki timer khatam hone par check ho)
+        pendingBets.push({ telegramId, betSelection, betAmount, period });
+
+        console.log(`User ${telegramId} ne ${betSelection} par ₹${betAmount} lagaye.`);
+
+        res.json({ success: true, newBalance: user.balance });
+    } catch (error) {
+        res.json({ success: false, message: "Server Error" });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Live Game Backend running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Live Game Backend running on port ${PORT}`));
