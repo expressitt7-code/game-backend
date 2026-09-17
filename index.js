@@ -6,32 +6,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Aapka Final MongoDB Connection Link (with Username & Password)
+// MongoDB Connection Link
 const MONGO_URI = "mongodb+srv://New_admin:h2VMUsM7a3W39J4E@cluster0.ydaktjx.mongodb.net/wingame?retryWrites=true&w=majority&appName=Cluster0";
 
-// MongoDB se connect karna
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ MongoDB Successfully Connected!'))
     .catch(err => console.log('❌ MongoDB Connection Error:', err));
 
-// User ka Schema (Database ka structure)
 const UserSchema = new mongoose.Schema({
     telegramId: { type: String, required: true, unique: true },
-    balance: { type: Number, default: 1000 } // Naye user ko 1000 coin milenge
+    balance: { type: Number, default: 1000 }
 });
 const User = mongoose.model('User', UserSchema);
 
-// Server ki Memory
 let countdown = 60;
 let currentPeriod = 20260917001;
 let gameHistory = [];
 let pendingBets = []; 
 
-// Game ka Timer aur Server-side Win/Loss Logic
 setInterval(async () => {
     countdown--;
     if (countdown <= 0) {
-        // Result Generate karna
         const colors = ['Red', 'Green', 'Violet'];
         const resColor = colors[Math.floor(Math.random() * colors.length)];
         const resNumber = Math.floor(Math.random() * 10);
@@ -39,7 +34,6 @@ setInterval(async () => {
         gameHistory.unshift({ period: currentPeriod, number: resNumber, color: resColor });
         if(gameHistory.length > 10) gameHistory.pop();
 
-        // 🏆 WINNING LOGIC (Database mein paise add karna)
         for (let bet of pendingBets) {
             if (bet.period === currentPeriod) {
                 let won = false;
@@ -52,12 +46,10 @@ setInterval(async () => {
 
                 if (won) {
                     let winAmount = bet.betAmount * multiplier;
-                    // Jeete huye user ka balance database mein badhana
                     await User.updateOne({ telegramId: bet.telegramId }, { $inc: { balance: winAmount } });
                 }
             }
         }
-        // Purani bets delete karna (naye round ke liye)
         pendingBets = pendingBets.filter(b => b.period !== currentPeriod);
 
         currentPeriod++;
@@ -65,18 +57,17 @@ setInterval(async () => {
     }
 }, 1000);
 
-// API: Game ka Status lena
 app.get('/game-status', (req, res) => {
     res.json({ period: currentPeriod, time: countdown, results: gameHistory });
 });
 
-// API: User ka Balance check karna
 app.post('/get-balance', async (req, res) => {
     const { telegramId } = req.body;
     try {
-        let user = await User.findOne({ telegramId });
+        const safeId = String(telegramId); // ID ko String me convert kar diya safety ke liye
+        let user = await User.findOne({ telegramId: safeId });
         if (!user) {
-            user = new User({ telegramId, balance: 1000 }); // Naya Account Banega
+            user = new User({ telegramId: safeId, balance: 1000 });
             await user.save();
         }
         res.json({ success: true, balance: user.balance });
@@ -85,26 +76,28 @@ app.post('/get-balance', async (req, res) => {
     }
 });
 
-// API: Bet Lagana
 app.post('/bet', async (req, res) => {
     const { telegramId, betSelection, betAmount, period } = req.body;
     
     try {
-        let user = await User.findOne({ telegramId });
-        if (!user) return res.json({ success: false, message: "User not found!" });
+        const safeId = String(telegramId); 
+        let user = await User.findOne({ telegramId: safeId });
+        
+        // 🛠 FIX: Agar user nahi mila, toh error dene ki bajaye turant naya account banayega
+        if (!user) {
+            user = new User({ telegramId: safeId, balance: 1000 });
+            await user.save();
+        }
         
         if (user.balance < betAmount) {
             return res.json({ success: false, message: "Insufficient Balance!" });
         }
 
-        // Database se paise kaatna
         user.balance -= betAmount;
         await user.save();
 
-        // Server ki line mein bet laga dena (taaki timer khatam hone par check ho)
-        pendingBets.push({ telegramId, betSelection, betAmount, period });
-
-        console.log(`User ${telegramId} ne ${betSelection} par ₹${betAmount} lagaye.`);
+        pendingBets.push({ telegramId: safeId, betSelection, betAmount, period });
+        console.log(`User ${safeId} ne ${betSelection} par ₹${betAmount} lagaye.`);
 
         res.json({ success: true, newBalance: user.balance });
     } catch (error) {
