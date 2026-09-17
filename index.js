@@ -7,67 +7,60 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// Game Variables
-let periodId = 20240213010; // Shuruaati Period ID
-let timeLeft = 60; // 60 seconds ka timer
-let history = []; // Purane results yahan save honge
+let history = [];
+let lastGeneratedPeriod = 0;
 
-// Yeh Timer lagataar Server par chalta rahega
-setInterval(() => {
-    timeLeft--;
+function getGameState() {
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(now.getTime() + istOffset);
     
-    if (timeLeft <= 0) {
-        // Result Generate karna (0 se 9 ke beech)
-        const randomNumber = Math.floor(Math.random() * 10);
-        let color = "";
-        
-        // Color decide karna
-        if (randomNumber === 0 || randomNumber === 5) {
-            color = "Violet";
-        } else if (randomNumber % 2 === 0) {
-            color = "Red"; // 2, 4, 6, 8
-        } else {
-            color = "Green"; // 1, 3, 7, 9
+    const yyyy = istTime.getUTCFullYear();
+    const mm = String(istTime.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(istTime.getUTCDate()).padStart(2, '0');
+    
+    const hours = istTime.getUTCHours();
+    const minutes = istTime.getUTCMinutes();
+    const totalMinutesToday = (hours * 60) + minutes;
+    
+    const periodStr = `${yyyy}${mm}${dd}${String(totalMinutesToday).padStart(4, '0')}`;
+    const currentPeriod = parseInt(periodStr);
+    
+    const secondsPassed = istTime.getUTCSeconds();
+    const timeLeft = 60 - secondsPassed;
+
+    if (currentPeriod > lastGeneratedPeriod) {
+        if (lastGeneratedPeriod !== 0) {
+            const randomNumber = Math.floor(Math.random() * 10);
+            let color = "";
+            if (randomNumber === 0 || randomNumber === 5) color = "Violet";
+            else if (randomNumber % 2 === 0) color = "Red";
+            else color = "Green";
+
+            // Naya result sabse upar add hoga
+            history.unshift({ period: lastGeneratedPeriod, number: randomNumber, color: color });
+            
+            // STRICTLY sirf last 10 periods hi rakhein
+            if (history.length > 10) {
+                history = history.slice(0, 10);
+            }
         }
-
-        // Result ko history mein daalna
-        history.unshift({ period: periodId, number: randomNumber, color: color });
-        
-        // Agar history 10 se zyada ho jaye toh purane mita do
-        if (history.length > 10) history.pop();
-
-        // Naya Period shuru karna
-        periodId++;
-        timeLeft = 60; 
+        lastGeneratedPeriod = currentPeriod;
     }
-}, 1000);
 
-// API 1: Frontend ko Timer aur Result bhejna
-app.get('/game-status', (req, res) => {
-    res.json({
-        period: periodId,
+    return {
+        period: currentPeriod,
         time: timeLeft,
         results: history
-    });
+    };
+}
+
+app.get('/game-status', (req, res) => {
+    res.json(getGameState());
 });
 
-// API 2: User ki bet (paise) accept karna
-app.post('/place-bet', (req, res) => {
-    const { amount, selection } = req.body;
-    
-    if (!amount || !selection) {
-        return res.status(400).json({ error: "Invalid Bet" });
-    }
-
-    console.log(`Bet Received: ₹${amount} on ${selection}`);
-    // Yahan hum aage chalkar User ka balance deduct karne ka code lagayenge
-    
-    res.json({ message: "Bet placed successfully!", status: "success" });
-});
-
-// Basic test URL
 app.get('/', (req, res) => {
-    res.send("🟢 Color Prediction Backend is LIVE!");
+    res.send("🟢 Win Go Backend is running 24/7!");
 });
 
 app.listen(PORT, () => {
