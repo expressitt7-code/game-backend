@@ -13,16 +13,41 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ MongoDB Successfully Connected!'))
     .catch(err => console.log('❌ MongoDB Connection Error:', err));
 
+// 1. User Schema (Balance ke liye)
 const UserSchema = new mongoose.Schema({
     telegramId: { type: String, required: true, unique: true },
     balance: { type: Number, default: 1000 }
 });
 const User = mongoose.model('User', UserSchema);
 
+// 2. 🌟 NAYA: Game History Schema (Results permanently save karne ke liye)
+const ResultSchema = new mongoose.Schema({
+    period: { type: Number, required: true, unique: true },
+    number: Number,
+    color: String
+});
+const Result = mongoose.model('Result', ResultSchema);
+
 let countdown = 60;
 let currentPeriod = 20260917001;
 let gameHistory = [];
 let pendingBets = []; 
+
+// Server start hote hi Database se purani history wapas lana
+async function loadHistory() {
+    try {
+        // Pichle 10 results database se nikalo
+        const pastResults = await Result.find().sort({ period: -1 }).limit(10);
+        if (pastResults.length > 0) {
+            gameHistory = pastResults;
+            currentPeriod = pastResults[0].period + 1; // Period wahan se shuru hoga jahan ruka tha
+            console.log(`✅ History loaded. Next Period: ${currentPeriod}`);
+        }
+    } catch (err) {
+        console.log("History load karne me error:", err);
+    }
+}
+loadHistory();
 
 setInterval(async () => {
     countdown--;
@@ -31,6 +56,14 @@ setInterval(async () => {
         const resColor = colors[Math.floor(Math.random() * colors.length)];
         const resNumber = Math.floor(Math.random() * 10);
         
+        // 🌟 NAYA: Har 1 min me jo result aayega, use Database me save karna
+        try {
+            const newResult = new Result({ period: currentPeriod, number: resNumber, color: resColor });
+            await newResult.save();
+        } catch (err) {
+            console.log("Result DB me save nahi hua:", err);
+        }
+
         gameHistory.unshift({ period: currentPeriod, number: resNumber, color: resColor });
         if(gameHistory.length > 10) gameHistory.pop();
 
@@ -64,7 +97,7 @@ app.get('/game-status', (req, res) => {
 app.post('/get-balance', async (req, res) => {
     const { telegramId } = req.body;
     try {
-        const safeId = String(telegramId); // ID ko String me convert kar diya safety ke liye
+        const safeId = String(telegramId);
         let user = await User.findOne({ telegramId: safeId });
         if (!user) {
             user = new User({ telegramId: safeId, balance: 1000 });
@@ -78,12 +111,10 @@ app.post('/get-balance', async (req, res) => {
 
 app.post('/bet', async (req, res) => {
     const { telegramId, betSelection, betAmount, period } = req.body;
-    
     try {
         const safeId = String(telegramId); 
         let user = await User.findOne({ telegramId: safeId });
         
-        // 🛠 FIX: Agar user nahi mila, toh error dene ki bajaye turant naya account banayega
         if (!user) {
             user = new User({ telegramId: safeId, balance: 1000 });
             await user.save();
@@ -97,7 +128,6 @@ app.post('/bet', async (req, res) => {
         await user.save();
 
         pendingBets.push({ telegramId: safeId, betSelection, betAmount, period });
-        console.log(`User ${safeId} ne ${betSelection} par ₹${betAmount} lagaye.`);
 
         res.json({ success: true, newBalance: user.balance });
     } catch (error) {
