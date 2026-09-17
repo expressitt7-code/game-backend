@@ -1,33 +1,67 @@
+
 const express = require('express');
 const cors = require('cors');
 
 const app = express();
-
-// CORS ko enable karna zaroori hai taaki Telegram app connect kar sake
 app.use(cors());
 app.use(express.json());
 
-// Server check karne ke liye basic route
-app.get('/', (req, res) => {
-    res.send("Game Backend is Running Successfully!");
-});
+// Server ki Memory (Database lagne tak yahan data rahega)
+let countdown = 60; // 1 Minute ka timer
+let currentPeriod = 20260917001; // Period ID
+let gameHistory = []; 
 
-// Bet lagane ka (POST) route
-app.post('/bet', (req, res) => {
-    const { telegramId, betColor, betAmount } = req.body;
-    
-    console.log(`User ${telegramId} ne ${betColor} par ${betAmount} 🪙 lagaye.`);
+// Server par Timer chalana (Har 1 second)
+setInterval(() => {
+    countdown--;
+    if (countdown <= 0) {
+        // Naya result nikalna
+        const colors = ['Red', 'Green', 'Violet'];
+        const resColor = colors[Math.floor(Math.random() * colors.length)];
+        const resNumber = Math.floor(Math.random() * 10); // 0-9 random number
+        
+        // History mein add karna
+        gameHistory.unshift({
+            period: currentPeriod,
+            number: resNumber,
+            color: resColor
+        });
 
-    // Game ko wapas success message bhejna
+        // Sirf last 10 records rakhna
+        if(gameHistory.length > 10) {
+            gameHistory.pop();
+        }
+
+        // Agle round ki tayyari
+        currentPeriod++;
+        countdown = 60; // Timer reset
+    }
+}, 1000);
+
+// API: Frontend ko timer aur history dena
+app.get('/game-status', (req, res) => {
     res.json({
-        success: true,
-        message: `Aapne ${betColor} par bet laga di hai!`,
-        newBalance: 900 // Abhi ke liye humne dummy balance diya hai
+        period: currentPeriod,
+        time: countdown,
+        results: gameHistory
     });
 });
 
-// Server chalu karna
+// API: Bet receive karna
+app.post('/bet', (req, res) => {
+    const { telegramId, betSelection, betAmount, period } = req.body;
+    
+    console.log(`User ${telegramId} ne ${betSelection} par ₹${betAmount} lagaye. (Period: ${period})`);
+
+    // Dummy logic: Balance se paise kaat kar wapas bhej raha hai
+    res.json({
+        success: true,
+        message: `Bet successfully placed on ${betSelection}!`,
+        newBalance: 1000 - betAmount // Mock balance update
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Live Game Backend running on port ${PORT}`);
 });
