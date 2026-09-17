@@ -1,163 +1,191 @@
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection Link
-const MONGO_URI = "mongodb+srv://New_admin:h2VMUsM7a3W39J4E@cluster0.ydaktjx.mongodb.net/wingame?retryWrites=true&w=majority&appName=Cluster0";
-
-mongoose.connect(MONGO_URI)
-    .then(() => console.log('✅ MongoDB Successfully Connected!'))
-    .catch(err => console.log('❌ MongoDB Connection Error:', err));
-
-// 1. User Schema 
-const UserSchema = new mongoose.Schema({
-    telegramId: { type: String, required: true, unique: true },
-    balance: { type: Number, default: 1000 }
-});
-const User = mongoose.model('User', UserSchema);
-
-// 2. Game History Schema
-const ResultSchema = new mongoose.Schema({
-    period: { type: Number, required: true, unique: true },
-    number: Number,
-    color: String
-});
-const Result = mongoose.model('Result', ResultSchema);
-
-// 3. 🌟 NAYA: My History (User Bets) Schema
-const BetSchema = new mongoose.Schema({
-    telegramId: String,
-    period: Number,
-    selection: String,
-    amount: Number,
-    status: { type: String, default: 'Pending' } // Pending, Won, Lost
-});
-const Bet = mongoose.model('Bet', BetSchema);
-
-let countdown = 60;
-let currentPeriod = 20260917001;
+// 🗄️ In-Memory Database (Aage MongoDB se replace karenge)
+let users = {}; 
+let currentPeriodBets = []; 
 let gameHistory = [];
-let pendingBets = []; 
+let lastGeneratedPeriod = 0;
 
-// Server start hote hi purani game history load karna
-async function loadHistory() {
-    try {
-        const pastResults = await Result.find().sort({ period: -1 }).limit(10);
-        if (pastResults.length > 0) {
-            gameHistory = pastResults;
-            currentPeriod = pastResults[0].period + 1; 
+// 🧠 LOGIC: Calculate Total Payout (Liability) for each possible outcome (0-9)
+function getLiabilityForNumber(number, bets) {
+    let liability = 0;
+    
+    // Number ke hisaab se uska Color set karna
+    let color1 = '';
+    let color2 = '';
+    if (number === 0) { color1 = 'Red'; color2 = 'Violet'; }
+    else if (number === 5) { color1 = 'Green'; color2 = 'Violet'; }
+    else if (number % 2 === 0) { color1 = 'Red'; }
+    else { color1 = 'Green'; }
+
+    // Number ke hisaab se Big/Small set karna
+    let bs = number > 4 ? 'Big' : 'Small';
+
+    bets.forEach(bet => {
+        // 1. Number Betting Check (Pays 9x)
+        if (bet.selection === number.toString()) {
+            liability += bet.amount * 9;
         }
-    } catch (err) {}
-}
-loadHistory();
-
-setInterval(async () => {
-    countdown--;
-    if (countdown <= 0) {
-        const colors = ['Red', 'Green', 'Violet'];
-        const resColor = colors[Math.floor(Math.random() * colors.length)];
-        const resNumber = Math.floor(Math.random() * 10);
         
-        try {
-            const newResult = new Result({ period: currentPeriod, number: resNumber, color: resColor });
-            await newResult.save();
-        } catch (err) {}
-
-        gameHistory.unshift({ period: currentPeriod, number: resNumber, color: resColor });
-        if(gameHistory.length > 10) gameHistory.pop();
-
-        for (let bet of pendingBets) {
-            if (bet.period === currentPeriod) {
-                let won = false;
-                let multiplier = 0;
-                
-                if (bet.betSelection === resColor) { won = true; multiplier = 2; }
-                let bs = resNumber > 4 ? "Big" : "Small";
-                if (bet.betSelection === bs) { won = true; multiplier = 2; }
-                if (bet.betSelection === resNumber.toString()) { won = true; multiplier = 9; }
-
-                if (won) {
-                    let winAmount = bet.betAmount * multiplier;
-                    await User.updateOne({ telegramId: bet.telegramId }, { $inc: { balance: winAmount } });
-                    // DB me status Won karna
-                    await Bet.findByIdAndUpdate(bet.dbId, { status: 'Won' });
-                } else {
-                    // DB me status Lost karna
-                    await Bet.findByIdAndUpdate(bet.dbId, { status: 'Lost' });
-                }
-            }
+        // 2. Color Betting Check
+        if (bet.selection === color1) {
+            // Agar 0 ya 5 aaya hai, toh Red/Green ka payout 1.5x hota hai, warna 2x
+            liability += (color2 !== '' ? bet.amount * 1.5 : bet.amount * 2);
         }
-        pendingBets = pendingBets.filter(b => b.period !== currentPeriod);
+        if (color2 !== '' && bet.selection === color2) {
+            // Violet par 4.5x payout hota hai
+            liability += bet.amount * 4.5; 
+        }
+        
+        // 3. Big / Small Betting Check (Pays 2x)
+        if (bet.selection === bs) {
+            liability += bet.amount * 2;
+        }
+    });
 
-        currentPeriod++;
-        countdown = 60;
+    return liability;
+}
+
+// 🎯 MAIN GAME ALGORITHM: Jis combination pe 0 ya Sabse kam bet hai, wo jitega
+function generateSmartResult() {
+    // Agar kisi ne koi bet nahi lagayi, toh random result nikal do
+    if (currentPeriodBets.length === 0) {
+        return Math.floor(Math.random() * 10); 
     }
-}, 1000);
+
+    let lowestLiability = Infinity;
+    let bestNumbers = [];
+
+    // 0 se 9 tak sabhi numbers ka total payout calculate karo
+    for (let i = 0; i <= 9; i++) {
+        let liability = getLiabilityForNumber(i, currentPeriodBets);
+        
+        if (liability < lowestLiability) {
+            lowestLiability = liability;
+            bestNumbers = [i]; 
+        } else if (liability === lowestLiability) {
+            bestNumbers.push(i);
+        }
+    }
+
+    // Agar ek se zyada numbers par same lowest bet (ya 0 bet) hai, toh unme se random ek chuno
+    let randomIndex = Math.floor(Math.random() * bestNumbers.length);
+    return bestNumbers[randomIndex];
+}
+
+// 🕒 GAME LOOP: Timer ke hisaab se naya result generate karna
+function getGameState() {
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(now.getTime() + istOffset);
+    
+    const yyyy = istTime.getUTCFullYear();
+    const mm = String(istTime.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(istTime.getUTCDate()).padStart(2, '0');
+    const totalMinutesToday = (istTime.getUTCHours() * 60) + istTime.getUTCMinutes();
+    
+    const periodStr = `${yyyy}${mm}${dd}${String(totalMinutesToday).padStart(4, '0')}`;
+    const currentPeriod = parseInt(periodStr);
+    const secondsPassed = istTime.getUTCSeconds();
+    const timeLeft = 60 - secondsPassed;
+
+    // Jaise hi naya period shuru ho (Timer reset ho)
+    if (currentPeriod > lastGeneratedPeriod) {
+        if (lastGeneratedPeriod !== 0) {
+            
+            // 🚀 SMART ALGORITHM CALL
+            const winNumber = generateSmartResult();
+            
+            let winColor = (winNumber === 0 || winNumber === 5) ? 'Violet' : (winNumber % 2 === 0 ? 'Red' : 'Green');
+            let winBS = winNumber > 4 ? 'Big' : 'Small';
+
+            // History Update
+            gameHistory.unshift({ period: lastGeneratedPeriod, number: winNumber, color: winColor });
+            if (gameHistory.length > 10) gameHistory = gameHistory.slice(0, 10);
+
+            // Users ka balance update karna
+            currentPeriodBets.forEach(bet => {
+                let userObj = users[bet.tgId];
+                if(userObj) {
+                    let userBetRecord = userObj.history.find(b => b.period === bet.period && b.selection === bet.selection);
+                    
+                    let won = false;
+                    let multiplier = 0;
+
+                    if (bet.selection === winNumber.toString()) { won = true; multiplier = 9; }
+                    else if (bet.selection === winColor) { 
+                        won = true; 
+                        multiplier = (winColor === 'Violet') ? 4.5 : ((winNumber === 0 || winNumber === 5) ? 1.5 : 2); 
+                    }
+                    else if (bet.selection === winBS) { won = true; multiplier = 2; }
+
+                    if (won) {
+                        userObj.balance += (bet.amount * multiplier);
+                        if(userBetRecord) userBetRecord.status = 'Won';
+                    } else {
+                        if(userBetRecord) userBetRecord.status = 'Lost';
+                    }
+                }
+            });
+
+            // Agle round ke liye bets clear kar do
+            currentPeriodBets = [];
+        }
+        lastGeneratedPeriod = currentPeriod;
+    }
+
+    return { period: currentPeriod, time: timeLeft, results: gameHistory };
+}
+
+
+// 🔌 API ENDPOINTS
 
 app.get('/game-status', (req, res) => {
-    res.json({ period: currentPeriod, time: countdown, results: gameHistory });
+    res.json(getGameState());
 });
 
-app.post('/get-balance', async (req, res) => {
+app.post('/get-balance', (req, res) => {
     const { telegramId } = req.body;
-    try {
-        const safeId = String(telegramId);
-        let user = await User.findOne({ telegramId: safeId });
-        if (!user) {
-            user = new User({ telegramId: safeId, balance: 1000 });
-            await user.save();
-        }
-        res.json({ success: true, balance: user.balance });
-    } catch (error) {
-        res.json({ success: false, message: "DB Error" });
-    }
+    if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] }; 
+    res.json({ success: true, balance: users[telegramId].balance });
 });
 
-// 🌟 NAYA API: User ki My History lane ke liye
-app.post('/my-history', async (req, res) => {
+app.post('/my-history', (req, res) => {
     const { telegramId } = req.body;
-    try {
-        const bets = await Bet.find({ telegramId: String(telegramId) }).sort({ period: -1 }).limit(20);
-        res.json({ success: true, history: bets });
-    } catch (error) {
-        res.json({ success: false });
-    }
+    let hist = users[telegramId] ? users[telegramId].history : [];
+    res.json({ success: true, history: hist });
 });
 
-app.post('/bet', async (req, res) => {
+app.post('/bet', (req, res) => {
     const { telegramId, betSelection, betAmount, period } = req.body;
-    try {
-        const safeId = String(telegramId); 
-        let user = await User.findOne({ telegramId: safeId });
-        
-        if (!user) {
-            user = new User({ telegramId: safeId, balance: 1000 });
-            await user.save();
-        }
-        
-        if (user.balance < betAmount) {
-            return res.json({ success: false, message: "Insufficient Balance!" });
-        }
+    
+    if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
 
-        user.balance -= betAmount;
-        await user.save();
-
-        // NAYA: Bet ko database me save karna
-        const newBet = new Bet({ telegramId: safeId, period, selection: betSelection, amount: betAmount });
-        await newBet.save();
-
-        // Memory me id ke sath save karna taaki result aane par update ho sake
-        pendingBets.push({ dbId: newBet._id, telegramId: safeId, betSelection, betAmount, period });
-
-        res.json({ success: true, newBalance: user.balance });
-    } catch (error) {
-        res.json({ success: false, message: "Server Error" });
+    if (users[telegramId].balance < betAmount) {
+        return res.json({ success: false, message: "Insufficient balance" });
     }
+
+    users[telegramId].balance -= betAmount;
+    
+    let newBet = { tgId: telegramId, period, selection: betSelection, amount: betAmount, status: 'Pending' };
+    
+    currentPeriodBets.push(newBet); 
+    users[telegramId].history.push(newBet); 
+
+    res.json({ success: true, newBalance: users[telegramId].balance });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Live Game Backend running on port ${PORT}`));
+app.get('/', (req, res) => {
+    res.send("🟢 Advance Loss-Prevention Algorithm is Running!");
+});
+
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
