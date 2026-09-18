@@ -130,7 +130,6 @@ app.get('/game-status', (req, res) => {
     res.json(getGameState());
 });
 
-// 🌟 TOTAL BALANCE SE MINUS KARNE KA LOGIC (Priority: Bonus -> Deposit -> Main)
 app.post('/bet', (req, res) => {
     const { mobile, betSelection, betAmount, period } = req.body;
     if (!users[mobile]) return res.json({ success: false, message: "User not found" });
@@ -174,7 +173,6 @@ app.post('/bet', (req, res) => {
     res.json({ success: true, balance: user.balance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance });
 });
 
-// 🌟 JEETNE PAR POORA REWARD MAIN BALANCE MEIN ADD HOGA
 app.post('/add-reward', (req, res) => {
     const { mobile, amount } = req.body;
     if (!users[mobile]) return res.json({ success: false });
@@ -211,5 +209,5 @@ app.post('/user-history', (req, res) => {
     });
 });
 
-app.get('/', (req, res) => { res.send("🟢 Game Backend Running Smoothly!"); });
+app.get('/', (req, res) => { res.send("🟢 Game Backend Active!"); });
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
