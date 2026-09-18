@@ -12,7 +12,8 @@ let users = {};
 let currentPeriodBets = []; 
 let gameHistory = [];
 let lastGeneratedPeriod = 0;
-let depositRequests = []; // 🌟 NAYA: Pending Deposits save karne ke liye
+let depositRequests = []; 
+let withdrawalRequests = []; // 🌟 NAYA: Pending Withdrawals save karne ke liye
 
 // --- GAME LOGIC (Smart Algorithm) ---
 function getLiabilityForNumber(number, bets) {
@@ -129,9 +130,8 @@ app.post('/add-reward', (req, res) => {
     res.json({ success: true, newBalance: users[telegramId].balance });
 });
 
-// 🌟 NEW: DEPOSIT & ADMIN API 🌟
+// 🌟 DEPOSIT & ADMIN API 🌟
 
-// User deposit request bhejta hai
 app.post('/deposit-request', (req, res) => {
     const { telegramId, amount, utr } = req.body;
     const newRequest = {
@@ -146,15 +146,13 @@ app.post('/deposit-request', (req, res) => {
     res.json({ success: true, message: "Request received successfully" });
 });
 
-// Admin saare pending deposits dekhta hai
 app.get('/admin/pending-deposits', (req, res) => {
     const pending = depositRequests.filter(req => req.status === 'Pending');
     res.json({ success: true, requests: pending });
 });
 
-// Admin deposit approve ya reject karta hai
 app.post('/admin/approve-deposit', (req, res) => {
-    const { requestId, action } = req.body; // action: 'approve' or 'reject'
+    const { requestId, action } = req.body; 
     
     let requestIndex = depositRequests.findIndex(r => r.id === requestId);
     if (requestIndex === -1) return res.json({ success: false, message: "Request not found" });
@@ -170,6 +168,53 @@ app.post('/admin/approve-deposit', (req, res) => {
     res.json({ success: true, message: `Deposit ${action}ed successfully!` });
 });
 
-app.get('/', (req, res) => { res.send("🟢 Backend with Admin System is Running!"); });
+// 🌟 WITHDRAWAL API (Naya Add Kiya Gaya) 🌟
+
+app.post('/withdraw-request', (req, res) => {
+    const { telegramId, amount, upiId } = req.body;
+    
+    if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
+    if (users[telegramId].balance < amount) return res.json({ success: false, message: "Insufficient balance" });
+
+    // Deduct balance immediately upon request
+    users[telegramId].balance -= amount;
+
+    const newRequest = {
+        id: Date.now().toString(),
+        telegramId: telegramId,
+        amount: amount,
+        upiId: upiId,
+        status: 'Pending',
+        time: new Date().toLocaleString()
+    };
+    withdrawalRequests.push(newRequest);
+    res.json({ success: true, message: "Request received successfully", newBalance: users[telegramId].balance });
+});
+
+app.get('/admin/pending-withdrawals', (req, res) => {
+    const pending = withdrawalRequests.filter(req => req.status === 'Pending');
+    res.json({ success: true, requests: pending });
+});
+
+app.post('/admin/approve-withdraw', (req, res) => {
+    const { requestId, action } = req.body; 
+    
+    let requestIndex = withdrawalRequests.findIndex(r => r.id === requestId);
+    if (requestIndex === -1) return res.json({ success: false, message: "Request not found" });
+
+    let request = withdrawalRequests[requestIndex];
+    request.status = action === 'approve' ? 'Approved' : 'Rejected';
+
+    // Agar Reject kiya, toh paise balance me wapas (Refund) kar do
+    if (action === 'reject') {
+        if (users[request.telegramId]) {
+            users[request.telegramId].balance += request.amount;
+        }
+    }
+
+    res.json({ success: true, message: action === 'approve' ? 'Withdrawal Approved!' : 'Rejected & Refunded!' });
+});
+
+app.get('/', (req, res) => { res.send("🟢 Backend with Full Admin System is Running!"); });
 
 app.listen(PORT, () => { console.log(`Server is running on port ${PORT}`); });
