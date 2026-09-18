@@ -12,7 +12,9 @@ let users = {};
 let currentPeriodBets = []; 
 let gameHistory = [];
 let lastGeneratedPeriod = 0;
+let depositRequests = []; // 🌟 NAYA: Pending Deposits save karne ke liye
 
+// --- GAME LOGIC (Smart Algorithm) ---
 function getLiabilityForNumber(number, bets) {
     let liability = 0;
     let color1 = '';
@@ -35,10 +37,8 @@ function getLiabilityForNumber(number, bets) {
 
 function generateSmartResult() {
     if (currentPeriodBets.length === 0) return Math.floor(Math.random() * 10); 
-
     let lowestLiability = Infinity;
     let bestNumbers = [];
-
     for (let i = 0; i <= 9; i++) {
         let liability = getLiabilityForNumber(i, currentPeriodBets);
         if (liability < lowestLiability) {
@@ -80,14 +80,10 @@ function getGameState() {
                 let userObj = users[bet.tgId];
                 if(userObj) {
                     let userBetRecord = userObj.history.find(b => b.period === bet.period && b.selection === bet.selection);
-                    let won = false;
-                    let multiplier = 0;
+                    let won = false; let multiplier = 0;
 
                     if (bet.selection === winNumber.toString()) { won = true; multiplier = 9; }
-                    else if (bet.selection === winColor) { 
-                        won = true; 
-                        multiplier = (winColor === 'Violet') ? 4.5 : ((winNumber === 0 || winNumber === 5) ? 1.5 : 2); 
-                    }
+                    else if (bet.selection === winColor) { won = true; multiplier = (winColor === 'Violet') ? 4.5 : ((winNumber === 0 || winNumber === 5) ? 1.5 : 2); }
                     else if (bet.selection === winBS) { won = true; multiplier = 2; }
 
                     if (won) {
@@ -105,7 +101,7 @@ function getGameState() {
     return { period: currentPeriod, time: timeLeft, results: gameHistory };
 }
 
-// 🔌 API ENDPOINTS
+// 🔌 API ENDPOINTS (Game & Users)
 app.get('/game-status', (req, res) => { res.json(getGameState()); });
 
 app.post('/get-balance', (req, res) => {
@@ -114,18 +110,11 @@ app.post('/get-balance', (req, res) => {
     res.json({ success: true, balance: users[telegramId].balance });
 });
 
-app.post('/my-history', (req, res) => {
-    const { telegramId } = req.body;
-    let hist = users[telegramId] ? users[telegramId].history : [];
-    res.json({ success: true, history: hist });
-});
-
 app.post('/bet', (req, res) => {
     const { telegramId, betSelection, betAmount, period } = req.body;
     if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
-    if (users[telegramId].balance < betAmount) {
-        return res.json({ success: false, message: "Insufficient balance" });
-    }
+    if (users[telegramId].balance < betAmount) return res.json({ success: false, message: "Insufficient balance" });
+    
     users[telegramId].balance -= betAmount;
     let newBet = { tgId: telegramId, period, selection: betSelection, amount: betAmount, status: 'Pending' };
     currentPeriodBets.push(newBet); 
@@ -133,16 +122,54 @@ app.post('/bet', (req, res) => {
     res.json({ success: true, newBalance: users[telegramId].balance });
 });
 
-// 🌟 NEW: AD REWARD API 🌟
 app.post('/add-reward', (req, res) => {
     const { telegramId, amount, type } = req.body;
     if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
-    
-    users[telegramId].balance += amount; // User ke account mein paise add karna
-    
+    users[telegramId].balance += amount; 
     res.json({ success: true, newBalance: users[telegramId].balance });
 });
 
-app.get('/', (req, res) => { res.send("🟢 Advance Loss-Prevention & Ads Algorithm is Running!"); });
+// 🌟 NEW: DEPOSIT & ADMIN API 🌟
+
+// User deposit request bhejta hai
+app.post('/deposit-request', (req, res) => {
+    const { telegramId, amount, utr } = req.body;
+    const newRequest = {
+        id: Date.now().toString(),
+        telegramId: telegramId,
+        amount: amount,
+        utr: utr,
+        status: 'Pending',
+        time: new Date().toLocaleString()
+    };
+    depositRequests.push(newRequest);
+    res.json({ success: true, message: "Request received successfully" });
+});
+
+// Admin saare pending deposits dekhta hai
+app.get('/admin/pending-deposits', (req, res) => {
+    const pending = depositRequests.filter(req => req.status === 'Pending');
+    res.json({ success: true, requests: pending });
+});
+
+// Admin deposit approve ya reject karta hai
+app.post('/admin/approve-deposit', (req, res) => {
+    const { requestId, action } = req.body; // action: 'approve' or 'reject'
+    
+    let requestIndex = depositRequests.findIndex(r => r.id === requestId);
+    if (requestIndex === -1) return res.json({ success: false, message: "Request not found" });
+
+    let request = depositRequests[requestIndex];
+    request.status = action === 'approve' ? 'Approved' : 'Rejected';
+
+    if (action === 'approve') {
+        if (!users[request.telegramId]) users[request.telegramId] = { balance: 1000.00, history: [] };
+        users[request.telegramId].balance += request.amount;
+    }
+
+    res.json({ success: true, message: `Deposit ${action}ed successfully!` });
+});
+
+app.get('/', (req, res) => { res.send("🟢 Backend with Admin System is Running!"); });
 
 app.listen(PORT, () => { console.log(`Server is running on port ${PORT}`); });
