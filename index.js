@@ -6,8 +6,7 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// Databases
-let users = {};          // { mobile: { password, uniqueId, balance, bonusBalance, depositBalance, history } }
+let users = {};          // { mobile: { password, uniqueId, balance, depositBalance, bonusBalance, history } }
 let currentPeriodBits = {}; 
 let gameHistory = [];
 let lastGeneratedPeriod = 0;
@@ -19,7 +18,6 @@ function generateUniqueId() {
     return 'UID' + Math.floor(100000 + Math.random() * 900000);
 }
 
-// 🎮 SMART GAME LOGIC
 function getLiabilityForNumber(number, bets) {
     let liability = 0;
     let color1 = ""; let color2 = "";
@@ -42,10 +40,8 @@ function getLiabilityForNumber(number, bets) {
 function generateSmartResult(p) {
     let bets = currentPeriodBits[p] || [];
     if (bets.length === 0) return Math.floor(Math.random() * 10);
-
     let lowestLiability = Infinity;
     let bestNumbers = [];
-
     for (let i = 0; i <= 9; i++) {
         let liability = getLiabilityForNumber(i, bets);
         if (liability < lowestLiability) {
@@ -86,14 +82,10 @@ function getGameState() {
     return { period: currentPeriod, time: timeLeft, results: gameHistory };
 }
 
-// --- AUTH & ACCOUNT APIs ---
 app.post('/register', (req, res) => {
     const { mobile, password, refCode } = req.body;
     if (!mobile || !password) return res.json({ success: false, message: "Mobile & Password required" });
-
-    if (users[mobile]) {
-        return res.json({ success: false, message: "Mobile number already registered!" });
-    }
+    if (users[mobile]) return res.json({ success: false, message: "Mobile number already registered!" });
 
     let uniqueId = generateUniqueId();
     let initialBonus = 0;
@@ -109,9 +101,9 @@ app.post('/register', (req, res) => {
     users[mobile] = {
         password: password,
         uniqueId: uniqueId,
-        balance: 0.00,        // Winnings / Withdrawable
-        depositBalance: 0.00, // Deposit Amount (Only for betting)
-        bonusBalance: initialBonus, // Referral Bonus (Only for betting)
+        balance: 0.00,
+        depositBalance: 0.00,
+        bonusBalance: initialBonus,
         history: []
     };
 
@@ -123,37 +115,22 @@ app.post('/login', (req, res) => {
     if (!users[mobile] || users[mobile].password !== password) {
         return res.json({ success: false, message: "Invalid mobile number or password!" });
     }
-
     let user = users[mobile];
-    res.json({
-        success: true,
-        uniqueId: user.uniqueId,
-        balance: user.balance,
-        depositBalance: user.depositBalance,
-        bonusBalance: user.bonusBalance,
-        message: "Login successful!"
-    });
+    res.json({ success: true, uniqueId: user.uniqueId, balance: user.balance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance });
 });
 
 app.post('/get-account-data', (req, res) => {
     const { mobile } = req.body;
     if (!users[mobile]) return res.json({ success: false });
-
     let user = users[mobile];
-    res.json({
-        success: true,
-        uniqueId: user.uniqueId,
-        balance: user.balance,
-        depositBalance: user.depositBalance,
-        bonusBalance: user.bonusBalance
-    });
+    res.json({ success: true, uniqueId: user.uniqueId, balance: user.balance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance });
 });
 
 app.get('/game-status', (req, res) => {
     res.json(getGameState());
 });
 
-// --- BETTING (Bonus -> Deposit -> Main Balance order mein katega) ---
+// 🌟 TOTAL BALANCE SE MINUS KARNE KA LOGIC (Priority: Bonus -> Deposit -> Main)
 app.post('/bet', (req, res) => {
     const { mobile, betSelection, betAmount, period } = req.body;
     if (!users[mobile]) return res.json({ success: false, message: "User not found" });
@@ -167,7 +144,6 @@ app.post('/bet', (req, res) => {
 
     let remaining = betAmount;
 
-    // 1. Pehle Bonus Balance se kaato
     if (user.bonusBalance >= remaining) {
         user.bonusBalance -= remaining;
         remaining = 0;
@@ -176,7 +152,6 @@ app.post('/bet', (req, res) => {
         user.bonusBalance = 0;
     }
 
-    // 2. Phir Deposit Balance se kaato
     if (remaining > 0) {
         if (user.depositBalance >= remaining) {
             user.depositBalance -= remaining;
@@ -187,7 +162,6 @@ app.post('/bet', (req, res) => {
         }
     }
 
-    // 3. Ant mein Main Balance se kaato
     if (remaining > 0) {
         user.balance -= remaining;
     }
@@ -197,15 +171,10 @@ app.post('/bet', (req, res) => {
 
     user.history.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
 
-    res.json({ 
-        success: true, 
-        balance: user.balance, 
-        depositBalance: user.depositBalance, 
-        bonusBalance: user.bonusBalance 
-    });
+    res.json({ success: true, balance: user.balance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance });
 });
 
-// Jeetne par paise seedha Withdrawable Main Balance mein jayenge
+// 🌟 JEETNE PAR POORA REWARD MAIN BALANCE MEIN ADD HOGA
 app.post('/add-reward', (req, res) => {
     const { mobile, amount } = req.body;
     if (!users[mobile]) return res.json({ success: false });
@@ -213,7 +182,6 @@ app.post('/add-reward', (req, res) => {
     res.json({ success: true, balance: users[mobile].balance });
 });
 
-// DEPOSIT: Yeh seedha depositBalance mein jayega (Withdraw nahi ho sakta)
 app.post('/deposit-request', (req, res) => {
     const { mobile, amount, utr } = req.body;
     if (!mobile || !amount || !utr) return res.json({ success: false });
@@ -221,13 +189,12 @@ app.post('/deposit-request', (req, res) => {
     res.json({ success: true });
 });
 
-// WITHDRAWAL: Sirf Main Balance se hi withdraw hoga!
 app.post('/withdraw-request', (req, res) => {
     const { mobile, amount, upiId } = req.body;
     if (!users[mobile]) return res.json({ success: false, message: "User not found" });
     
     if (users[mobile].balance < amount) {
-        return res.json({ success: false, message: "Insufficient withdrawable main balance! Deposit amount can only be used for betting." });
+        return res.json({ success: false, message: "Insufficient withdrawable main balance!" });
     }
 
     users[mobile].balance -= amount;
@@ -244,5 +211,5 @@ app.post('/user-history', (req, res) => {
     });
 });
 
-app.get('/', (req, res) => { res.send("🟢 Secure Game & Deposit Restriction Backend Running!"); });
+app.get('/', (req, res) => { res.send("🟢 Game Backend Running Smoothly!"); });
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
