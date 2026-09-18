@@ -1,25 +1,24 @@
 const express = require('express');
 const cors = require('cors');
-
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
 
-// 🗄️ In-Memory Database
-let users = {}; 
-let currentPeriodBets = []; 
+// In-Memory Database
+let users = {};          // { telegramId: { balance: 1000, history: [] } }
+let currentPeriodBits = {}; 
 let gameHistory = [];
 let lastGeneratedPeriod = 0;
-let depositRequests = []; 
-let withdrawalRequests = []; // 🌟 NAYA: Pending Withdrawals save karne ke liye
 
-// --- GAME LOGIC (Smart Algorithm) ---
+let depositRequests = [];   // [{ id, telegramId, amount, utr, status: 'Pending', time }]
+let withdrawals = [];     // [{ id, telegramId, amount, upiId, status: 'Pending', time }]
+
+// 🎮 GAME LOGIC (Smart Algorithm)
 function getLiabilityForNumber(number, bets) {
     let liability = 0;
-    let color1 = '';
-    let color2 = '';
+    let color1 = ""; let color2 = "";
     if (number === 0) { color1 = 'Red'; color2 = 'Violet'; }
     else if (number === 5) { color1 = 'Green'; color2 = 'Violet'; }
     else if (number % 2 === 0) { color1 = 'Red'; }
@@ -29,22 +28,25 @@ function getLiabilityForNumber(number, bets) {
 
     bets.forEach(bet => {
         if (bet.selection === number.toString()) liability += bet.amount * 9;
-        if (bet.selection === color1) liability += (color2 !== '' ? bet.amount * 1.5 : bet.amount * 2);
-        if (color2 !== '' && bet.selection === color2) liability += bet.amount * 4.5; 
+        if (bet.selection === color1) liability += bet.amount * 2;
+        if (color2 && bet.selection === color2) liability += bet.amount * 4.5;
         if (bet.selection === bs) liability += bet.amount * 2;
     });
     return liability;
 }
 
-function generateSmartResult() {
-    if (currentPeriodBets.length === 0) return Math.floor(Math.random() * 10); 
+function generateSmartResult(p) {
+    let bets = currentPeriodBits[p] || [];
+    if (bets.length === 0) return Math.floor(Math.random() * 10);
+
     let lowestLiability = Infinity;
     let bestNumbers = [];
+
     for (let i = 0; i <= 9; i++) {
-        let liability = getLiabilityForNumber(i, currentPeriodBets);
+        let liability = getLiabilityForNumber(i, bets);
         if (liability < lowestLiability) {
             lowestLiability = liability;
-            bestNumbers = [i]; 
+            bestNumbers = [i];
         } else if (liability === lowestLiability) {
             bestNumbers.push(i);
         }
@@ -53,168 +55,156 @@ function generateSmartResult() {
     return bestNumbers[randomIndex];
 }
 
+// GAME TIMER LOOP
 function getGameState() {
     const now = new Date();
     const istOffset = 5.5 * 60 * 60 * 1000;
     const istTime = new Date(now.getTime() + istOffset);
-    
     const yyyy = istTime.getUTCFullYear();
     const mm = String(istTime.getUTCMonth() + 1).padStart(2, '0');
     const dd = String(istTime.getUTCDate()).padStart(2, '0');
-    const totalMinutesToday = (istTime.getUTCHours() * 60) + istTime.getUTCMinutes();
     
+    const totalMinutesToday = (istTime.getUTCHours() * 60) + istTime.getUTCMinutes();
     const periodStr = `${yyyy}${mm}${dd}${String(totalMinutesToday).padStart(4, '0')}`;
     const currentPeriod = parseInt(periodStr);
+
     const secondsPassed = istTime.getUTCSeconds();
     const timeLeft = 60 - secondsPassed;
 
     if (currentPeriod > lastGeneratedPeriod) {
         if (lastGeneratedPeriod !== 0) {
-            const winNumber = generateSmartResult();
-            let winColor = (winNumber === 0 || winNumber === 5) ? 'Violet' : (winNumber % 2 === 0 ? 'Red' : 'Green');
-            let winBS = winNumber > 4 ? 'Big' : 'Small';
-
-            gameHistory.unshift({ period: lastGeneratedPeriod, number: winNumber, color: winColor });
-            if (gameHistory.length > 10) gameHistory = gameHistory.slice(0, 10);
-
-            currentPeriodBets.forEach(bet => {
-                let userObj = users[bet.tgId];
-                if(userObj) {
-                    let userBetRecord = userObj.history.find(b => b.period === bet.period && b.selection === bet.selection);
-                    let won = false; let multiplier = 0;
-
-                    if (bet.selection === winNumber.toString()) { won = true; multiplier = 9; }
-                    else if (bet.selection === winColor) { won = true; multiplier = (winColor === 'Violet') ? 4.5 : ((winNumber === 0 || winNumber === 5) ? 1.5 : 2); }
-                    else if (bet.selection === winBS) { won = true; multiplier = 2; }
-
-                    if (won) {
-                        userObj.balance += (bet.amount * multiplier);
-                        if(userBetRecord) userBetRecord.status = 'Won';
-                    } else {
-                        if(userBetRecord) userBetRecord.status = 'Lost';
-                    }
-                }
+            let winningNumber = generateSmartResult(lastGeneratedPeriod);
+            let winColor = (winningNumber === 0 || winningNumber === 5) ? 'Violet' : (winningNumber % 2 === 0 ? 'Red' : 'Green');
+            
+            gameHistory.unshift({
+                period: lastGeneratedPeriod,
+                number: winningNumber,
+                color: winColor
             });
-            currentPeriodBets = [];
+            if (gameHistory.length > 10) gameHistory.pop();
         }
         lastGeneratedPeriod = currentPeriod;
     }
+
     return { period: currentPeriod, time: timeLeft, results: gameHistory };
 }
 
-// 🔌 API ENDPOINTS (Game & Users)
-app.get('/game-status', (req, res) => { res.json(getGameState()); });
-
-app.post('/get-balance', (req, res) => {
-    const { telegramId } = req.body;
-    if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] }; 
-    res.json({ success: true, balance: users[telegramId].balance });
+// API ENDPOINTS
+app.get('/game-status', (req, res) => {
+    res.json(getGameState());
 });
 
 app.post('/bet', (req, res) => {
     const { telegramId, betSelection, betAmount, period } = req.body;
+    if (!telegramId) return res.status(400).json({ success: false, message: "Invalid User" });
+
     if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
-    if (users[telegramId].balance < betAmount) return res.json({ success: false, message: "Insufficient balance" });
-    
+
+    if (users[telegramId].balance < betAmount) {
+        return res.json({ success: false, message: "Insufficient balance!" });
+    }
+
     users[telegramId].balance -= betAmount;
-    let newBet = { tgId: telegramId, period, selection: betSelection, amount: betAmount, status: 'Pending' };
-    currentPeriodBets.push(newBet); 
-    users[telegramId].history.push(newBet); 
+
+    if (!currentPeriodBits[period]) currentPeriodBits[period] = [];
+    currentPeriodBits[period].push({ telegramId, selection: betSelection, amount: betAmount });
+
+    users[telegramId].history.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
+
     res.json({ success: true, newBalance: users[telegramId].balance });
 });
 
+// EARN REWARD API (Watch Ads)
 app.post('/add-reward', (req, res) => {
-    const { telegramId, amount, type } = req.body;
+    const { telegramId, amount } = req.body;
+    if (!telegramId) return res.status(400).json({ success: false });
+
     if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
-    users[telegramId].balance += amount; 
+    users[telegramId].balance += amount;
+
     res.json({ success: true, newBalance: users[telegramId].balance });
 });
 
-// 🌟 DEPOSIT & ADMIN API 🌟
-
+// DEPOSIT API
 app.post('/deposit-request', (req, res) => {
     const { telegramId, amount, utr } = req.body;
-    const newRequest = {
-        id: Date.now().toString(),
-        telegramId: telegramId,
-        amount: amount,
-        utr: utr,
-        status: 'Pending',
-        time: new Date().toLocaleString()
-    };
-    depositRequests.push(newRequest);
+    if (!telegramId || !amount || !utr) return res.status(400).json({ success: false });
+
+    let newReq = { id: 'DEP_' + Date.now(), telegramId, amount, utr, status: 'Pending', time: new Date().toLocaleString() };
+    depositRequests.push(newReq);
     res.json({ success: true, message: "Request received successfully" });
 });
 
-app.get('/admin/pending-deposits', (req, res) => {
-    const pending = depositRequests.filter(req => req.status === 'Pending');
-    res.json({ success: true, requests: pending });
-});
-
-app.post('/admin/approve-deposit', (req, res) => {
-    const { requestId, action } = req.body; 
-    
-    let requestIndex = depositRequests.findIndex(r => r.id === requestId);
-    if (requestIndex === -1) return res.json({ success: false, message: "Request not found" });
-
-    let request = depositRequests[requestIndex];
-    request.status = action === 'approve' ? 'Approved' : 'Rejected';
-
-    if (action === 'approve') {
-        if (!users[request.telegramId]) users[request.telegramId] = { balance: 1000.00, history: [] };
-        users[request.telegramId].balance += request.amount;
-    }
-
-    res.json({ success: true, message: `Deposit ${action}ed successfully!` });
-});
-
-// 🌟 WITHDRAWAL API (Naya Add Kiya Gaya) 🌟
-
+// WITHDRAWAL API
 app.post('/withdraw-request', (req, res) => {
     const { telegramId, amount, upiId } = req.body;
-    
+    if (!telegramId || !amount || !upiId) return res.status(400).json({ success: false, message: "Invalid data" });
+
     if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
     if (users[telegramId].balance < amount) return res.json({ success: false, message: "Insufficient balance" });
 
-    // Deduct balance immediately upon request
+    // Balance turant cut karlo
     users[telegramId].balance -= amount;
 
-    const newRequest = {
-        id: Date.now().toString(),
-        telegramId: telegramId,
-        amount: amount,
-        upiId: upiId,
-        status: 'Pending',
-        time: new Date().toLocaleString()
-    };
-    withdrawalRequests.push(newRequest);
-    res.json({ success: true, message: "Request received successfully", newBalance: users[telegramId].balance });
+    let newReq = { id: 'WITH_' + Date.now(), telegramId, amount, upiId, status: 'Pending', time: new Date().toLocaleString() };
+    withdrawals.push(newReq);
+
+    res.json({ success: true, newBalance: users[telegramId].balance });
+});
+
+// USER HISTORY API (Deposit & Withdraw status track karne ke liye)
+app.post('/user-history', (req, res) => {
+    const { telegramId } = req.body;
+    if (!telegramId) return res.status(400).json({ success: false });
+
+    const userDeposits = depositRequests.filter(d => d.telegramId === telegramId);
+    const userWithdrawals = withdrawals.filter(w => w.telegramId === telegramId);
+
+    res.json({ success: true, deposits: userDeposits, withdrawals: userWithdrawals });
+});
+
+// ADMIN PANEL APIs
+app.get('/admin/pending-deposits', (req, res) => {
+    let pending = depositRequests.filter(r => r.status === 'Pending');
+    res.json({ requests: pending });
+});
+
+app.post('/admin/approve-deposit', (req, res) => {
+    const { requestId, action } = req.body;
+    let reqObj = depositRequests.find(r => r.id === requestId);
+    if (!reqObj) return res.status(404).json({ message: "Not found" });
+
+    reqObj.status = action; // 'approve' ya 'reject'
+    if (action === 'approve') {
+        if (!users[reqObj.telegramId]) users[reqObj.telegramId] = { balance: 1000.00, history: [] };
+        users[reqObj.telegramId].balance += reqObj.amount;
+    }
+    res.json({ message: `Deposit ${action}ed successfully!` });
 });
 
 app.get('/admin/pending-withdrawals', (req, res) => {
-    const pending = withdrawalRequests.filter(req => req.status === 'Pending');
-    res.json({ success: true, requests: pending });
+    let pending = withdrawals.filter(r => r.status === 'Pending');
+    res.json({ requests: pending });
 });
 
 app.post('/admin/approve-withdraw', (req, res) => {
-    const { requestId, action } = req.body; 
-    
-    let requestIndex = withdrawalRequests.findIndex(r => r.id === requestId);
-    if (requestIndex === -1) return res.json({ success: false, message: "Request not found" });
+    const { requestId, action } = req.body;
+    let reqObj = withdrawals.find(r => r.id === requestId);
+    if (!reqObj) return res.status(404).json({ message: "Not found" });
 
-    let request = withdrawalRequests[requestIndex];
-    request.status = action === 'approve' ? 'Approved' : 'Rejected';
-
-    // Agar Reject kiya, toh paise balance me wapas (Refund) kar do
+    reqObj.status = action; // 'approve' ya 'reject'
     if (action === 'reject') {
-        if (users[request.telegramId]) {
-            users[request.telegramId].balance += request.amount;
-        }
+        // Agar reject kiya toh paise wapas refund kar do
+        if (!users[reqObj.telegramId]) users[reqObj.telegramId] = { balance: 1000.00, history: [] };
+        users[reqObj.telegramId].balance += reqObj.amount;
     }
-
-    res.json({ success: true, message: action === 'approve' ? 'Withdrawal Approved!' : 'Rejected & Refunded!' });
+    res.json({ message: action === 'approve' ? "Withdrawal Approved!" : "Rejected & Refunded!" });
 });
 
-app.get('/', (req, res) => { res.send("🟢 Backend with Full Admin System is Running!"); });
+app.get('/', (req, res) => {
+    res.send("🟢 Backend with Full Admin & History System is Running!");
+});
 
-app.listen(PORT, () => { console.log(`Server is running on port ${PORT}`); });
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
