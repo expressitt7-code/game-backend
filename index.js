@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-let users = {};          // { mobile: { password, uniqueId, balance, depositBalance, bonusBalance, history } }
+let users = {};          
 let currentPeriodBits = {}; 
 let gameHistory = [];
 let lastGeneratedPeriod = 0;
@@ -182,9 +182,11 @@ app.post('/add-reward', (req, res) => {
 
 app.post('/deposit-request', (req, res) => {
     const { mobile, amount, utr } = req.body;
-    if (!mobile || !amount || !utr) return res.json({ success: false });
+    if (!mobile || !amount || !utr) return res.json({ success: false, message: "All fields required" });
+    if (amount < 100) return res.json({ success: false, message: "Minimum deposit amount is ₹100" });
+
     depositRequests.push({ id: 'DEP_' + Date.now(), mobile, amount, utr, status: 'Pending', time: new Date().toLocaleString() });
-    res.json({ success: true });
+    res.json({ success: true, message: "Deposit request submitted to admin successfully!" });
 });
 
 app.post('/withdraw-request', (req, res) => {
