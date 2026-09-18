@@ -6,16 +6,20 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// In-Memory Database
-let users = {};          // { telegramId: { balance: 1000, history: [] } }
+// Databases
+let users = {};          // { mobile: { password, uniqueId, balance, bonusBalance, depositBalance, history } }
 let currentPeriodBits = {}; 
 let gameHistory = [];
 let lastGeneratedPeriod = 0;
 
-let depositRequests = [];   // [{ id, telegramId, amount, utr, status: 'Pending', time }]
-let withdrawals = [];     // [{ id, telegramId, amount, upiId, status: 'Pending', time }]
+let depositRequests = []; 
+let withdrawals = [];
 
-// 🎮 GAME LOGIC (Smart Algorithm)
+function generateUniqueId() {
+    return 'UID' + Math.floor(100000 + Math.random() * 900000);
+}
+
+// 🎮 SMART GAME LOGIC
 function getLiabilityForNumber(number, bets) {
     let liability = 0;
     let color1 = ""; let color2 = "";
@@ -51,11 +55,9 @@ function generateSmartResult(p) {
             bestNumbers.push(i);
         }
     }
-    let randomIndex = Math.floor(Math.random() * bestNumbers.length);
-    return bestNumbers[randomIndex];
+    return bestNumbers[Math.floor(Math.random() * bestNumbers.length)];
 }
 
-// GAME TIMER LOOP
 function getGameState() {
     const now = new Date();
     const istOffset = 5.5 * 60 * 60 * 1000;
@@ -76,135 +78,171 @@ function getGameState() {
             let winningNumber = generateSmartResult(lastGeneratedPeriod);
             let winColor = (winningNumber === 0 || winningNumber === 5) ? 'Violet' : (winningNumber % 2 === 0 ? 'Red' : 'Green');
             
-            gameHistory.unshift({
-                period: lastGeneratedPeriod,
-                number: winningNumber,
-                color: winColor
-            });
+            gameHistory.unshift({ period: lastGeneratedPeriod, number: winningNumber, color: winColor });
             if (gameHistory.length > 10) gameHistory.pop();
         }
         lastGeneratedPeriod = currentPeriod;
     }
-
     return { period: currentPeriod, time: timeLeft, results: gameHistory };
 }
 
-// API ENDPOINTS
+// --- AUTH & ACCOUNT APIs ---
+app.post('/register', (req, res) => {
+    const { mobile, password, refCode } = req.body;
+    if (!mobile || !password) return res.json({ success: false, message: "Mobile & Password required" });
+
+    if (users[mobile]) {
+        return res.json({ success: false, message: "Mobile number already registered!" });
+    }
+
+    let uniqueId = generateUniqueId();
+    let initialBonus = 0;
+
+    if (refCode && Object.values(users).some(u => u.uniqueId === refCode)) {
+        initialBonus = 100; 
+        let referrerMobile = Object.keys(users).find(m => users[m].uniqueId === refCode);
+        if (referrerMobile) {
+            users[referrerMobile].bonusBalance = (users[referrerMobile].bonusBalance || 0) + 50;
+        }
+    }
+
+    users[mobile] = {
+        password: password,
+        uniqueId: uniqueId,
+        balance: 0.00,        // Winnings / Withdrawable
+        depositBalance: 0.00, // Deposit Amount (Only for betting)
+        bonusBalance: initialBonus, // Referral Bonus (Only for betting)
+        history: []
+    };
+
+    res.json({ success: true, uniqueId: uniqueId, message: "Account created successfully!" });
+});
+
+app.post('/login', (req, res) => {
+    const { mobile, password } = req.body;
+    if (!users[mobile] || users[mobile].password !== password) {
+        return res.json({ success: false, message: "Invalid mobile number or password!" });
+    }
+
+    let user = users[mobile];
+    res.json({
+        success: true,
+        uniqueId: user.uniqueId,
+        balance: user.balance,
+        depositBalance: user.depositBalance,
+        bonusBalance: user.bonusBalance,
+        message: "Login successful!"
+    });
+});
+
+app.post('/get-account-data', (req, res) => {
+    const { mobile } = req.body;
+    if (!users[mobile]) return res.json({ success: false });
+
+    let user = users[mobile];
+    res.json({
+        success: true,
+        uniqueId: user.uniqueId,
+        balance: user.balance,
+        depositBalance: user.depositBalance,
+        bonusBalance: user.bonusBalance
+    });
+});
+
 app.get('/game-status', (req, res) => {
     res.json(getGameState());
 });
 
+// --- BETTING (Bonus -> Deposit -> Main Balance order mein katega) ---
 app.post('/bet', (req, res) => {
-    const { telegramId, betSelection, betAmount, period } = req.body;
-    if (!telegramId) return res.status(400).json({ success: false, message: "Invalid User" });
+    const { mobile, betSelection, betAmount, period } = req.body;
+    if (!users[mobile]) return res.json({ success: false, message: "User not found" });
 
-    if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
+    let user = users[mobile];
+    let totalAvailable = user.balance + user.depositBalance + user.bonusBalance;
 
-    if (users[telegramId].balance < betAmount) {
-        return res.json({ success: false, message: "Insufficient balance!" });
+    if (totalAvailable < betAmount) {
+        return res.json({ success: false, message: "Insufficient total balance!" });
     }
 
-    users[telegramId].balance -= betAmount;
+    let remaining = betAmount;
+
+    // 1. Pehle Bonus Balance se kaato
+    if (user.bonusBalance >= remaining) {
+        user.bonusBalance -= remaining;
+        remaining = 0;
+    } else {
+        remaining -= user.bonusBalance;
+        user.bonusBalance = 0;
+    }
+
+    // 2. Phir Deposit Balance se kaato
+    if (remaining > 0) {
+        if (user.depositBalance >= remaining) {
+            user.depositBalance -= remaining;
+            remaining = 0;
+        } else {
+            remaining -= user.depositBalance;
+            user.depositBalance = 0;
+        }
+    }
+
+    // 3. Ant mein Main Balance se kaato
+    if (remaining > 0) {
+        user.balance -= remaining;
+    }
 
     if (!currentPeriodBits[period]) currentPeriodBits[period] = [];
-    currentPeriodBits[period].push({ telegramId, selection: betSelection, amount: betAmount });
+    currentPeriodBits[period].push({ mobile, selection: betSelection, amount: betAmount });
 
-    users[telegramId].history.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
+    user.history.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
 
-    res.json({ success: true, newBalance: users[telegramId].balance });
+    res.json({ 
+        success: true, 
+        balance: user.balance, 
+        depositBalance: user.depositBalance, 
+        bonusBalance: user.bonusBalance 
+    });
 });
 
-// EARN REWARD API (Watch Ads)
+// Jeetne par paise seedha Withdrawable Main Balance mein jayenge
 app.post('/add-reward', (req, res) => {
-    const { telegramId, amount } = req.body;
-    if (!telegramId) return res.status(400).json({ success: false });
-
-    if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
-    users[telegramId].balance += amount;
-
-    res.json({ success: true, newBalance: users[telegramId].balance });
+    const { mobile, amount } = req.body;
+    if (!users[mobile]) return res.json({ success: false });
+    users[mobile].balance += amount;
+    res.json({ success: true, balance: users[mobile].balance });
 });
 
-// DEPOSIT API
+// DEPOSIT: Yeh seedha depositBalance mein jayega (Withdraw nahi ho sakta)
 app.post('/deposit-request', (req, res) => {
-    const { telegramId, amount, utr } = req.body;
-    if (!telegramId || !amount || !utr) return res.status(400).json({ success: false });
-
-    let newReq = { id: 'DEP_' + Date.now(), telegramId, amount, utr, status: 'Pending', time: new Date().toLocaleString() };
-    depositRequests.push(newReq);
-    res.json({ success: true, message: "Request received successfully" });
+    const { mobile, amount, utr } = req.body;
+    if (!mobile || !amount || !utr) return res.json({ success: false });
+    depositRequests.push({ id: 'DEP_' + Date.now(), mobile, amount, utr, status: 'Pending', time: new Date().toLocaleString() });
+    res.json({ success: true });
 });
 
-// WITHDRAWAL API
+// WITHDRAWAL: Sirf Main Balance se hi withdraw hoga!
 app.post('/withdraw-request', (req, res) => {
-    const { telegramId, amount, upiId } = req.body;
-    if (!telegramId || !amount || !upiId) return res.status(400).json({ success: false, message: "Invalid data" });
+    const { mobile, amount, upiId } = req.body;
+    if (!users[mobile]) return res.json({ success: false, message: "User not found" });
+    
+    if (users[mobile].balance < amount) {
+        return res.json({ success: false, message: "Insufficient withdrawable main balance! Deposit amount can only be used for betting." });
+    }
 
-    if (!users[telegramId]) users[telegramId] = { balance: 1000.00, history: [] };
-    if (users[telegramId].balance < amount) return res.json({ success: false, message: "Insufficient balance" });
-
-    // Balance turant cut karlo
-    users[telegramId].balance -= amount;
-
-    let newReq = { id: 'WITH_' + Date.now(), telegramId, amount, upiId, status: 'Pending', time: new Date().toLocaleString() };
-    withdrawals.push(newReq);
-
-    res.json({ success: true, newBalance: users[telegramId].balance });
+    users[mobile].balance -= amount;
+    withdrawals.push({ id: 'WITH_' + Date.now(), mobile, amount, upiId, status: 'Pending', time: new Date().toLocaleString() });
+    res.json({ success: true, balance: users[mobile].balance });
 });
 
-// USER HISTORY API (Deposit & Withdraw status track karne ke liye)
 app.post('/user-history', (req, res) => {
-    const { telegramId } = req.body;
-    if (!telegramId) return res.status(400).json({ success: false });
-
-    const userDeposits = depositRequests.filter(d => d.telegramId === telegramId);
-    const userWithdrawals = withdrawals.filter(w => w.telegramId === telegramId);
-
-    res.json({ success: true, deposits: userDeposits, withdrawals: userWithdrawals });
+    const { mobile } = req.body;
+    res.json({
+        success: true,
+        deposits: depositRequests.filter(d => d.mobile === mobile),
+        withdrawals: withdrawals.filter(w => w.mobile === mobile)
+    });
 });
 
-// ADMIN PANEL APIs
-app.get('/admin/pending-deposits', (req, res) => {
-    let pending = depositRequests.filter(r => r.status === 'Pending');
-    res.json({ requests: pending });
-});
-
-app.post('/admin/approve-deposit', (req, res) => {
-    const { requestId, action } = req.body;
-    let reqObj = depositRequests.find(r => r.id === requestId);
-    if (!reqObj) return res.status(404).json({ message: "Not found" });
-
-    reqObj.status = action; // 'approve' ya 'reject'
-    if (action === 'approve') {
-        if (!users[reqObj.telegramId]) users[reqObj.telegramId] = { balance: 1000.00, history: [] };
-        users[reqObj.telegramId].balance += reqObj.amount;
-    }
-    res.json({ message: `Deposit ${action}ed successfully!` });
-});
-
-app.get('/admin/pending-withdrawals', (req, res) => {
-    let pending = withdrawals.filter(r => r.status === 'Pending');
-    res.json({ requests: pending });
-});
-
-app.post('/admin/approve-withdraw', (req, res) => {
-    const { requestId, action } = req.body;
-    let reqObj = withdrawals.find(r => r.id === requestId);
-    if (!reqObj) return res.status(404).json({ message: "Not found" });
-
-    reqObj.status = action; // 'approve' ya 'reject'
-    if (action === 'reject') {
-        // Agar reject kiya toh paise wapas refund kar do
-        if (!users[reqObj.telegramId]) users[reqObj.telegramId] = { balance: 1000.00, history: [] };
-        users[reqObj.telegramId].balance += reqObj.amount;
-    }
-    res.json({ message: action === 'approve' ? "Withdrawal Approved!" : "Rejected & Refunded!" });
-});
-
-app.get('/', (req, res) => {
-    res.send("🟢 Backend with Full Admin & History System is Running!");
-});
-
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+app.get('/', (req, res) => { res.send("🟢 Secure Game & Deposit Restriction Backend Running!"); });
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
