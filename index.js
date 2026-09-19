@@ -41,7 +41,6 @@ const Result = mongoose.model('Result', ResultSchema);
 
 
 // --- 2. GAME LOGIC & MASTER CLOCK ---
-// Time-based period (hamesha accurate rahega)
 let currentPeriod = Math.floor(Date.now() / 60000);
 let countdown = 60 - new Date().getSeconds();
 let gameHistory = [];
@@ -54,7 +53,6 @@ async function loadHistory() {
         const pastResults = await Result.find().sort({ period: -1 }).limit(10);
         if (pastResults.length > 0) {
             gameHistory = pastResults;
-            // Ensure next period is accurate based on time
             currentPeriod = Math.floor(Date.now() / 60000); 
         }
     } catch (err) { console.log("History load error"); }
@@ -70,7 +68,7 @@ setInterval(async () => {
     if (actualPeriod > currentPeriod) {
         let finalNumber;
         
-        // 🌟 NAYA: Admin Forced Result Logic
+        // 🌟 Admin Forced Result Logic
         if (adminNextResult) {
             if(adminNextResult.type === 'number') {
                 finalNumber = parseInt(adminNextResult.value);
@@ -81,7 +79,7 @@ setInterval(async () => {
                 let opts = adminNextResult.value === 'Big' ? [5,6,7,8,9] : [0,1,2,3,4];
                 finalNumber = opts[Math.floor(Math.random() * opts.length)];
             }
-            adminNextResult = null; // Ek baar use hone ke baad clear kar do
+            adminNextResult = null; 
         } else {
             // Random System Result
             finalNumber = Math.floor(Math.random() * 10);
@@ -100,14 +98,33 @@ setInterval(async () => {
         gameHistory.unshift({ period: currentPeriod, number: finalNumber, color: finalColor, size: finalSize });
         if(gameHistory.length > 10) gameHistory.pop();
 
-        // 🏆 WINNING LOGIC & PAYOUTS
+        // 🏆 ACCURATE WINNING LOGIC & PAYOUTS
         for (let bet of pendingBets) {
             let won = false;
             let multiplier = 0;
             
-            if (bet.betSelection === finalColor) { won = true; multiplier = 2; }
-            if (bet.betSelection === finalSize) { won = true; multiplier = 2; }
-            if (bet.betSelection === finalNumber.toString()) { won = true; multiplier = 9; }
+            // 1. Number Bet (9x)
+            if (bet.betSelection === finalNumber.toString()) {
+                won = true;
+                multiplier = 9;
+            }
+            // 2. Size Bet (2x)
+            else if (bet.betSelection === finalSize) {
+                won = true;
+                multiplier = 2;
+            }
+            // 3. Color Bet
+            else if (bet.betSelection === finalColor) {
+                won = true;
+                if (finalColor === 'Violet') {
+                    multiplier = 4.5;
+                } else if (finalNumber === 0 || finalNumber === 5) {
+                    // Agar Red/Green ke sath Violet combination ho
+                    multiplier = 1.5;
+                } else {
+                    multiplier = 2;
+                }
+            }
 
             if (won) {
                 let winAmount = bet.betAmount * multiplier;
@@ -213,14 +230,14 @@ app.post('/admin/approve-withdraw', async (req, res) => {
     res.json({ message: `Withdraw ${action}d!` });
 });
 
-// 🌟 NAYA: Admin Set Next Result API
+// Admin Set Next Result API
 app.post('/admin/set-game-result', (req, res) => {
     const { type, value } = req.body; 
     adminNextResult = { type, value };
     res.json({ success: true, message: `Fixed Next Winner: ${value}` });
 });
 
-// 🌟 NAYA: Admin Dashboard Live Data Fetch (Kaun kitne paise laga raha hai)
+// Admin Dashboard Live Data Fetch
 app.get('/admin/live-game-data', (req, res) => {
     let betTotals = { Green: 0, Violet: 0, Red: 0, Big: 0, Small: 0, '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8':0, '9':0 };
     let totalMoneyPool = 0;
