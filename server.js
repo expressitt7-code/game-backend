@@ -75,7 +75,32 @@ app.post('/withdraw-request', async (req, res) => {
 });
 
 // ==========================================
-// 🌟 2. ADMIN PANEL APIs 🌟
+// 🌟 2. GAME BETTING LOGIC 🌟
+// ==========================================
+let currentPeriodBets = []; // Live bets store karne ke liye
+
+app.post('/bet', async (req, res) => {
+    try {
+        const { mobile, betSelection, betAmount, period } = req.body;
+        const user = await User.findOne({ mobile });
+        
+        if (!user || user.mainBalance < betAmount) {
+            return res.json({ success: false, message: "Insufficient Balance!" });
+        }
+
+        user.mainBalance -= betAmount;
+        user.gameHistory.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
+        await user.save();
+
+        // Admin dashboard ke liye live bet save karna
+        currentPeriodBets.push({ selection: betSelection, amount: betAmount });
+
+        res.json({ success: true, balance: user.mainBalance, message: "Bet Placed!" });
+    } catch (err) { res.json({ success: false, message: "Server Error" }); }
+});
+
+// ==========================================
+// 🌟 3. ADMIN PANEL APIs 🌟
 // ==========================================
 app.get('/admin/users', async (req, res) => {
     const users = await User.find({}, { password: 0 }).sort({ _id: -1 });
@@ -113,20 +138,30 @@ app.post('/admin/approve-withdraw', async (req, res) => {
 });
 
 // ==========================================
-// 🌟 3. GAME LOGIC & MANUAL CONTROL 🌟
+// 🌟 4. GAME LOGIC & MANUAL CONTROL 🌟
 // ==========================================
 let liveHistory = [
-    { period: 0, number: 3, color: 'Green' },
-    { period: 0, number: 8, color: 'Red' },
-    { period: 0, number: 0, color: 'Violet' }
+    { period: 0, number: 3, color: 'Green', size: 'Small' },
+    { period: 0, number: 8, color: 'Red', size: 'Big' },
+    { period: 0, number: 0, color: 'Violet', size: 'Small' }
 ];
 let currentActivePeriod = Math.floor(Date.now() / 60000);
 let adminNextResult = null;
 
+// New Admin Set Result Route (Color, Number, Size)
 app.post('/admin/set-game-result', (req, res) => {
-    const { color, number } = req.body;
-    adminNextResult = { color, number };
-    res.json({ success: true, message: `Next Result Fixed: ${color} (${number})` });
+    const { type, value } = req.body; 
+    adminNextResult = { type, value };
+    res.json({ success: true, message: `Next Result Fixed: ${value}` });
+});
+
+// Admin Live Data Route
+app.get('/admin/live-game-data', (req, res) => {
+    let betTotals = { Green: 0, Violet: 0, Red: 0, Big: 0, Small: 0, '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8':0, '9':0 };
+    currentPeriodBets.forEach(b => {
+        if(betTotals[b.selection] !== undefined) betTotals[b.selection] += b.amount;
+    });
+    res.json({ success: true, period: currentActivePeriod, history: liveHistory, bets: betTotals, nextForce: adminNextResult });
 });
 
 app.get('/game-status', (req, res) => {
@@ -135,23 +170,37 @@ app.get('/game-status', (req, res) => {
     const actualPeriod = Math.floor(now.getTime() / 60000);
 
     if (actualPeriod > currentActivePeriod) {
-        let finalColor = 'Red';
         let finalNumber = 2;
 
+        // Force Result Logic
         if (adminNextResult) {
-            finalColor = adminNextResult.color;
-            finalNumber = adminNextResult.number;
-            adminNextResult = null;
+            if(adminNextResult.type === 'number') {
+                finalNumber = parseInt(adminNextResult.value);
+            } else if (adminNextResult.type === 'color') {
+                let opts = adminNextResult.value === 'Green' ? [1,3,7,9] : (adminNextResult.value === 'Red' ? [2,4,6,8] : [0,5]);
+                finalNumber = opts[Math.floor(Math.random() * opts.length)];
+            } else if (adminNextResult.type === 'size') {
+                let opts = adminNextResult.value === 'Big' ? [5,6,7,8,9] : [0,1,2,3,4];
+                finalNumber = opts[Math.floor(Math.random() * opts.length)];
+            }
+            adminNextResult = null; // Clear after use
         } else {
             finalNumber = Math.floor(Math.random() * 10);
-            if (finalNumber === 0 || finalNumber === 5) finalColor = 'Violet';
-            else if (finalNumber % 2 === 0) finalColor = 'Red';
-            else finalColor = 'Green';
         }
 
-        liveHistory.unshift({ period: currentActivePeriod, number: finalNumber, color: finalColor });
+        // Determine Color & Size based on final number
+        let finalColor = 'Green';
+        if (finalNumber === 0 || finalNumber === 5) finalColor = 'Violet';
+        else if (finalNumber % 2 === 0) finalColor = 'Red';
+
+        let finalSize = finalNumber > 4 ? 'Big' : 'Small';
+
+        // Update history
+        liveHistory.unshift({ period: currentActivePeriod, number: finalNumber, color: finalColor, size: finalSize });
         if (liveHistory.length > 10) liveHistory.pop();
+        
         currentActivePeriod = actualPeriod;
+        currentPeriodBets = []; // 🌟 Clear bets for new period 🌟
     }
 
     res.json({ period: actualPeriod, time: remainingTime, results: liveHistory });
