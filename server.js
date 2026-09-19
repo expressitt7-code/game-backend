@@ -113,14 +113,14 @@ app.post('/admin/approve-withdraw', async (req, res) => {
 });
 
 // ==========================================
-// 🌟 3. SERVER-SIDE GAME LOOP (24/7) 🌟
+// 🌟 3. SERVER-SIDE GAME LOOP & LOGIC 🌟
 // ==========================================
 let currentActivePeriod = Math.floor(Date.now() / 60000);
 let liveHistory = [];
 let currentPeriodBets = [];
 let adminNextResult = null;
 
-// Populate initial 10 records so history is never empty on server start
+// Initial Dummy History
 let initialP = currentActivePeriod - 10;
 for (let i = 0; i < 10; i++) {
     let n = Math.floor(Math.random() * 10);
@@ -129,42 +129,97 @@ for (let i = 0; i < 10; i++) {
     liveHistory.unshift({ period: initialP + i, number: n, color: c, size: s });
 }
 
+// --- AUTO PROFIT CALCULATION LOGIC ---
+function calculateWinningResult(currentBets, adminForcedResult = null) {
+    // 1. Agar Admin ne panel se result Force (Fix) kiya hai, toh direct wahi pass karo
+    if (adminForcedResult) {
+        let finalNum = 0, finalColor = '', finalSize = '';
+        
+        if (adminForcedResult.type === 'number') {
+            finalNum = parseInt(adminForcedResult.value);
+        } else if (adminForcedResult.type === 'color') {
+            if (adminForcedResult.value === 'Green') finalNum = 1;
+            else if (adminForcedResult.value === 'Red') finalNum = 2;
+            else if (adminForcedResult.value === 'Violet') finalNum = 0;
+        } else if (adminForcedResult.type === 'size') {
+            finalNum = adminForcedResult.value === 'Big' ? 6 : 2; // Default safe numbers for sizes
+        }
+        
+        // Colors & Size Set karna
+        finalSize = finalNum >= 5 ? 'Big' : 'Small';
+        if (finalNum === 0 || finalNum === 5) finalColor = 'Violet'; // Fixed to display Violet properly in UI
+        else if (finalNum % 2 === 0) finalColor = 'Red';
+        else finalColor = 'Green';
+
+        return { number: finalNum, color: finalColor, size: finalSize, isForced: true };
+    }
+
+    // 2. Agar Admin ne kuch set nahi kiya, toh 'Sabse Kam Paisa Dene Wala' Logic chalega
+    let minPayout = Infinity;
+    let bestNumber = 0;
+
+    // System 0 se 9 tak har number check karega
+    for (let i = 0; i <= 9; i++) {
+        let currentPayout = 0;
+        let numStr = i.toString();
+        let sizeStr = i >= 5 ? 'Big' : 'Small';
+
+        // A. Number ka 9x Payout
+        if (currentBets[numStr]) currentPayout += currentBets[numStr] * 9;
+
+        // B. Size (Big/Small) ka 2x Payout
+        if (currentBets[sizeStr]) currentPayout += currentBets[sizeStr] * 2;
+
+        // C. Color ka Payout
+        if (i === 0) {
+            if (currentBets['Red']) currentPayout += currentBets['Red'] * 1.5;
+            if (currentBets['Violet']) currentPayout += currentBets['Violet'] * 4.5;
+        } else if (i === 5) {
+            if (currentBets['Green']) currentPayout += currentBets['Green'] * 1.5;
+            if (currentBets['Violet']) currentPayout += currentBets['Violet'] * 4.5;
+        } else if (i % 2 === 0) {
+            if (currentBets['Red']) currentPayout += currentBets['Red'] * 2;
+        } else {
+            if (currentBets['Green']) currentPayout += currentBets['Green'] * 2;
+        }
+
+        // Jisme sabse kam payout (User kam jeete) usko bestNumber bana do
+        if (currentPayout < minPayout) {
+            minPayout = currentPayout;
+            bestNumber = i;
+        }
+    }
+
+    // Best Number ke hisaab se Color aur Size set karo
+    let winColor = (bestNumber === 0 || bestNumber % 2 === 0) ? 'Red' : 'Green';
+    if(bestNumber === 0 || bestNumber === 5) winColor = 'Violet'; // Fixed to display Violet properly in UI
+    let winSize = bestNumber >= 5 ? 'Big' : 'Small';
+
+    return { number: bestNumber, color: winColor, size: winSize, isForced: false };
+}
+
 // 🟢 THE MASTER GAME CLOCK (Runs every 1 second continuously) 🟢
 setInterval(() => {
     const actualPeriod = Math.floor(Date.now() / 60000);
     
     // Agar 1 minute poora ho gaya, toh naya result nikalo
     if (actualPeriod > currentActivePeriod) {
-        let finalNumber = 2;
+        
+        // 1. Calculate Total Bets Placed in this period
+        let betTotals = { Green: 0, Violet: 0, Red: 0, Big: 0, Small: 0, '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8':0, '9':0 };
+        currentPeriodBets.forEach(b => {
+            if(betTotals[b.selection] !== undefined) betTotals[b.selection] += b.amount;
+        });
 
-        if (adminNextResult) {
-            // Admin Forced Result
-            if(adminNextResult.type === 'number') {
-                finalNumber = parseInt(adminNextResult.value);
-            } else if (adminNextResult.type === 'color') {
-                let opts = adminNextResult.value === 'Green' ? [1,3,7,9] : (adminNextResult.value === 'Red' ? [2,4,6,8] : [0,5]);
-                finalNumber = opts[Math.floor(Math.random() * opts.length)];
-            } else if (adminNextResult.type === 'size') {
-                let opts = adminNextResult.value === 'Big' ? [5,6,7,8,9] : [0,1,2,3,4];
-                finalNumber = opts[Math.floor(Math.random() * opts.length)];
-            }
-            adminNextResult = null; // Ek baar result aane ke baad clear kar do
-        } else {
-            // Random System Result
-            finalNumber = Math.floor(Math.random() * 10);
-        }
+        // 2. Pass betTotals to Auto Profit Logic
+        const result = calculateWinningResult(betTotals, adminNextResult);
+        adminNextResult = null; // Clear Admin force
 
-        let finalColor = 'Green';
-        if (finalNumber === 0 || finalNumber === 5) finalColor = 'Violet';
-        else if (finalNumber % 2 === 0) finalColor = 'Red';
-
-        let finalSize = finalNumber > 4 ? 'Big' : 'Small';
-
-        // History me add karo
-        liveHistory.unshift({ period: currentActivePeriod, number: finalNumber, color: finalColor, size: finalSize });
+        // 3. Add to History
+        liveHistory.unshift({ period: currentActivePeriod, number: result.number, color: result.color, size: result.size });
         if (liveHistory.length > 10) liveHistory.pop(); // Sirf last 10 rakho
         
-        // Reset for NEW period
+        // 4. Reset for NEW period
         currentActivePeriod = actualPeriod;
         currentPeriodBets = []; // Naye round ke bet zero kar do
     }
@@ -186,7 +241,7 @@ app.post('/bet', async (req, res) => {
         user.gameHistory.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
         await user.save();
 
-        // Save bet in server memory for Admin live monitoring
+        // Save bet in server memory for Auto-Profit Calculation & Admin live monitoring
         currentPeriodBets.push({ selection: betSelection, amount: betAmount });
 
         res.json({ success: true, balance: user.mainBalance, message: "Bet Placed Successfully!" });
@@ -209,11 +264,15 @@ app.get('/admin/live-game-data', (req, res) => {
         if(betTotals[b.selection] !== undefined) betTotals[b.selection] += b.amount;
     });
     
+    // Calculate total money pooled this round
+    let totalPool = currentPeriodBets.reduce((acc, curr) => acc + curr.amount, 0);
+
     res.json({ 
         success: true, 
         period: currentActivePeriod, 
         time: remainingTime,
         history: liveHistory, 
+        totalMoney: totalPool,
         bets: betTotals, 
         nextForce: adminNextResult 
     });
