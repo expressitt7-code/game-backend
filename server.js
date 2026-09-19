@@ -1,4 +1,3 @@
-
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -8,10 +7,10 @@ app.use(express.json());
 app.use(cors());
 
 // 🌟 MONGODB CONNECTION (Database) 🌟
-const DB_URL = "mongodb+srv://New_admin:h2VMUsM7a3W39J4E@cluster0.ydaktjx.mongodb.net/?appName=Cluster0"; 
+const DB_URL = "mongodb+srv://New_admin:h2VMUsM7a3W39J4E@cluster0.ydaktjx.mongodb.net/?appName=Cluster0";
 mongoose.connect(DB_URL, { useNewUrlParser: true, useUnifiedTopology: true })
-    .then(() => console.log("✅ Database Connected Successfully!"))
-    .catch(err => console.log("❌ Database Connection Error: ", err));
+.then(() => console.log("✅ Database Connected Successfully!"))
+.catch(err => console.log("❌ Database Connection Error: ", err));
 
 // 🌟 USER SCHEMA (Database me kya kya save hoga) 🌟
 const userSchema = new mongoose.Schema({
@@ -74,9 +73,9 @@ app.post('/deposit-request', async (req, res) => {
         const { mobile, amount, utr } = req.body;
         const reqId = "DEP" + Date.now();
         const dateStr = new Date().toLocaleString();
-        
-        await User.updateOne({ mobile }, { 
-            $push: { deposits: { id: reqId, amount, utr, date: dateStr, status: 'pending' } } 
+
+        await User.updateOne({ mobile }, {
+            $push: { deposits: { id: reqId, amount, utr, date: dateStr, status: 'pending' } }
         });
         res.json({ success: true, message: "Deposit request submitted. Awaiting Admin Approval." });
     } catch (err) { res.json({ success: false, message: "Error submitting deposit" }); }
@@ -86,7 +85,7 @@ app.post('/withdraw-request', async (req, res) => {
     try {
         const { mobile, amount, upiId } = req.body;
         const user = await User.findOne({ mobile });
-        
+
         if(user.mainBalance < amount) {
             return res.json({ success: false, message: "Insufficient Balance!" });
         }
@@ -97,10 +96,10 @@ app.post('/withdraw-request', async (req, res) => {
         user.mainBalance -= amount;
         const reqId = "WID" + Date.now();
         const dateStr = new Date().toLocaleString();
-        
+
         user.withdrawals.push({ id: reqId, amount, upiId, date: dateStr, status: 'pending' });
         await user.save();
-        
+
         res.json({ success: true, message: "Withdrawal request submitted." });
     } catch (err) { res.json({ success: false, message: "Error submitting withdrawal" }); }
 });
@@ -110,7 +109,7 @@ app.post('/withdraw-request', async (req, res) => {
 // ==========================================
 app.get('/admin/users', async (req, res) => {
     try {
-        const users = await User.find({}, { password: 0 }).sort({ _id: -1 }); 
+        const users = await User.find({}, { password: 0 }).sort({ _id: -1 });
         res.json({ success: true, users });
     } catch (err) { res.json({ success: false, message: "Error fetching data" }); }
 });
@@ -154,7 +153,7 @@ app.post('/admin/approve-deposit', async (req, res) => {
         } else {
             user.deposits[depositIndex].status = 'rejected';
         }
-        
+
         await user.save();
         res.json({ success: true, message: action === 'approve' ? "Deposit Approved & Balance Added!" : "Deposit Rejected!" });
     } catch (err) { res.json({ success: false, message: "Server Error" }); }
@@ -173,7 +172,7 @@ app.post('/admin/approve-withdraw', async (req, res) => {
             user.withdrawals[withIndex].status = 'rejected';
             user.mainBalance += user.withdrawals[withIndex].amount;
         }
-        
+
         await user.save();
         res.json({ success: true, message: action === 'approve' ? "Withdrawal Approved!" : "Withdrawal Rejected & Refunded!" });
     } catch (err) { res.json({ success: false, message: "Server Error" }); }
@@ -187,7 +186,7 @@ app.get('/game-status', (req, res) => {
     const seconds = now.getSeconds();
     const remainingTime = 60 - seconds;
     const period = Math.floor(now.getTime() / 60000);
-    
+
     res.json({
         period: period,
         time: remainingTime,
