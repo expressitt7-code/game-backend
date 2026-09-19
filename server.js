@@ -78,7 +78,8 @@ app.post('/withdraw-request', async (req, res) => {
 // 🌟 2. ADMIN PANEL APIs 🌟
 // ==========================================
 app.get('/admin/users', async (req, res) => {
-    const users = await User.find({}, { password: 0 }).sort({ _id: -1 });
+    // Yahan se { password: 0 } hata diya gaya hai taaki admin ko password dikhe
+    const users = await User.find({}).sort({ _id: -1 });
     res.json({ success: true, users });
 });
 app.get('/admin/pending-deposits', async (req, res) => {
