@@ -6,13 +6,12 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// 🌟 MONGODB CONNECTION (Database) 🌟
+// 🌟 MONGODB CONNECTION 🌟
 const DB_URL = "mongodb+srv://New_admin:h2VMUsM7a3W39J4E@cluster0.ydaktjx.mongodb.net/?appName=Cluster0";
 mongoose.connect(DB_URL, { useNewUrlParser: true, useUnifiedTopology: true })
 .then(() => console.log("✅ Database Connected Successfully!"))
 .catch(err => console.log("❌ Database Connection Error: ", err));
 
-// 🌟 USER SCHEMA (Database me kya kya save hoga) 🌟
 const userSchema = new mongoose.Schema({
     mobile: { type: String, required: true, unique: true },
     password: { type: String, required: true },
@@ -24,182 +23,139 @@ const userSchema = new mongoose.Schema({
     withdrawals: [{ id: String, amount: Number, upiId: String, date: String, status: String }],
     gameHistory: [{ period: Number, selection: String, amount: Number, status: String }]
 });
-
 const User = mongoose.model('User', userSchema);
 
 // ==========================================
-// 🌟 1. AUTHENTICATION APIs (Login / Signup) 🌟
+// 🌟 1. AUTHENTICATION & USERS APIs 🌟
 // ==========================================
 app.post('/register', async (req, res) => {
     try {
         const { mobile, password } = req.body;
-        const existingUser = await User.findOne({ mobile });
-        if (existingUser) return res.json({ success: false, message: "Mobile number already registered!" });
-
+        if (await User.findOne({ mobile })) return res.json({ success: false, message: "Mobile number already registered!" });
         const uniqueId = "UID" + Math.floor(1000000 + Math.random() * 9000000);
-        const newUser = new User({ mobile, password, uniqueId });
-        await newUser.save();
+        await new User({ mobile, password, uniqueId }).save();
         res.json({ success: true, message: "Registration Successful!", uniqueId });
     } catch (err) { res.json({ success: false, message: "Server Error" }); }
 });
 
 app.post('/login', async (req, res) => {
     try {
-        const { mobile, password } = req.body;
-        const user = await User.findOne({ mobile, password });
-        if (user) {
-            res.json({ success: true, message: "Login Successful!" });
-        } else {
-            res.json({ success: false, message: "Invalid Mobile or Password!" });
-        }
+        const user = await User.findOne({ mobile: req.body.mobile, password: req.body.password });
+        if (user) res.json({ success: true, message: "Login Successful!" });
+        else res.json({ success: false, message: "Invalid Mobile or Password!" });
     } catch (err) { res.json({ success: false, message: "Server Error" }); }
 });
 
 app.post('/get-account-data', async (req, res) => {
     try {
-        const { mobile } = req.body;
-        const user = await User.findOne({ mobile });
-        if (user) {
-            res.json({ success: true, balance: user.mainBalance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance, uniqueId: user.uniqueId });
-        } else { res.json({ success: false, message: "User not found" }); }
+        const user = await User.findOne({ mobile: req.body.mobile });
+        if (user) res.json({ success: true, balance: user.mainBalance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance, uniqueId: user.uniqueId });
+        else res.json({ success: false, message: "User not found" });
     } catch (err) { res.json({ success: false, message: "Server Error" }); }
 });
 
-// ==========================================
-// 🌟 2. USER DEPOSIT & WITHDRAW APIs 🌟
-// ==========================================
 app.post('/deposit-request', async (req, res) => {
     try {
-        const { mobile, amount, utr } = req.body;
-        const reqId = "DEP" + Date.now();
-        const dateStr = new Date().toLocaleString();
-
-        await User.updateOne({ mobile }, {
-            $push: { deposits: { id: reqId, amount, utr, date: dateStr, status: 'pending' } }
-        });
+        await User.updateOne({ mobile: req.body.mobile }, { $push: { deposits: { id: "DEP" + Date.now(), amount: req.body.amount, utr: req.body.utr, date: new Date().toLocaleString(), status: 'pending' } } });
         res.json({ success: true, message: "Deposit request submitted. Awaiting Admin Approval." });
-    } catch (err) { res.json({ success: false, message: "Error submitting deposit" }); }
+    } catch (err) { res.json({ success: false, message: "Error" }); }
 });
 
 app.post('/withdraw-request', async (req, res) => {
     try {
-        const { mobile, amount, upiId } = req.body;
-        const user = await User.findOne({ mobile });
-
-        if(user.mainBalance < amount) {
-            return res.json({ success: false, message: "Insufficient Balance!" });
-        }
-        if(amount < 500) {
-            return res.json({ success: false, message: "Minimum withdrawal is ₹500" });
-        }
-
-        user.mainBalance -= amount;
-        const reqId = "WID" + Date.now();
-        const dateStr = new Date().toLocaleString();
-
-        user.withdrawals.push({ id: reqId, amount, upiId, date: dateStr, status: 'pending' });
+        const user = await User.findOne({ mobile: req.body.mobile });
+        if(user.mainBalance < req.body.amount) return res.json({ success: false, message: "Insufficient Balance!" });
+        if(req.body.amount < 500) return res.json({ success: false, message: "Minimum withdrawal is ₹500" });
+        
+        user.mainBalance -= req.body.amount;
+        user.withdrawals.push({ id: "WID" + Date.now(), amount: req.body.amount, upiId: req.body.upiId, date: new Date().toLocaleString(), status: 'pending' });
         await user.save();
-
         res.json({ success: true, message: "Withdrawal request submitted." });
-    } catch (err) { res.json({ success: false, message: "Error submitting withdrawal" }); }
+    } catch (err) { res.json({ success: false, message: "Error" }); }
 });
 
 // ==========================================
-// 🌟 3. ADMIN PANEL APIs 🌟
+// 🌟 2. ADMIN PANEL APIs 🌟
 // ==========================================
 app.get('/admin/users', async (req, res) => {
-    try {
-        const users = await User.find({}, { password: 0 }).sort({ _id: -1 });
-        res.json({ success: true, users });
-    } catch (err) { res.json({ success: false, message: "Error fetching data" }); }
+    const users = await User.find({}, { password: 0 }).sort({ _id: -1 });
+    res.json({ success: true, users });
 });
-
 app.get('/admin/pending-deposits', async (req, res) => {
-    try {
-        const users = await User.find({ "deposits.status": "pending" });
-        let requests = [];
-        users.forEach(u => {
-            u.deposits.filter(d => d.status === 'pending').forEach(d => {
-                requests.push({ mobile: u.mobile, id: d.id, amount: d.amount, utr: d.utr, date: d.date });
-            });
-        });
-        res.json({ success: true, requests });
-    } catch (err) { res.json({ success: false, message: "Error" }); }
+    const users = await User.find({ "deposits.status": "pending" });
+    let requests = [];
+    users.forEach(u => u.deposits.filter(d => d.status === 'pending').forEach(d => requests.push({ mobile: u.mobile, ...d._doc })));
+    res.json({ success: true, requests });
 });
-
 app.get('/admin/pending-withdrawals', async (req, res) => {
-    try {
-        const users = await User.find({ "withdrawals.status": "pending" });
-        let requests = [];
-        users.forEach(u => {
-            u.withdrawals.filter(w => w.status === 'pending').forEach(w => {
-                requests.push({ mobile: u.mobile, id: w.id, amount: w.amount, upiId: w.upiId, date: w.date });
-            });
-        });
-        res.json({ success: true, requests });
-    } catch (err) { res.json({ success: false, message: "Error" }); }
+    const users = await User.find({ "withdrawals.status": "pending" });
+    let requests = [];
+    users.forEach(u => u.withdrawals.filter(w => w.status === 'pending').forEach(w => requests.push({ mobile: u.mobile, ...w._doc })));
+    res.json({ success: true, requests });
 });
 
 app.post('/admin/approve-deposit', async (req, res) => {
-    try {
-        const { requestId, action } = req.body;
-        const user = await User.findOne({ "deposits.id": requestId });
-        if (!user) return res.json({ success: false, message: "Request not found" });
-
-        const depositIndex = user.deposits.findIndex(d => d.id === requestId);
-        if (action === 'approve') {
-            user.deposits[depositIndex].status = 'approved';
-            user.mainBalance += user.deposits[depositIndex].amount;
-        } else {
-            user.deposits[depositIndex].status = 'rejected';
-        }
-
-        await user.save();
-        res.json({ success: true, message: action === 'approve' ? "Deposit Approved & Balance Added!" : "Deposit Rejected!" });
-    } catch (err) { res.json({ success: false, message: "Server Error" }); }
+    const user = await User.findOne({ "deposits.id": req.body.requestId });
+    const deposit = user.deposits.find(d => d.id === req.body.requestId);
+    if (req.body.action === 'approve') { deposit.status = 'approved'; user.mainBalance += deposit.amount; } 
+    else { deposit.status = 'rejected'; }
+    await user.save();
+    res.json({ success: true, message: `Deposit ${req.body.action}d successfully!` });
 });
 
 app.post('/admin/approve-withdraw', async (req, res) => {
-    try {
-        const { requestId, action } = req.body;
-        const user = await User.findOne({ "withdrawals.id": requestId });
-        if (!user) return res.json({ success: false, message: "Request not found" });
-
-        const withIndex = user.withdrawals.findIndex(w => w.id === requestId);
-        if (action === 'approve') {
-            user.withdrawals[withIndex].status = 'approved';
-        } else {
-            user.withdrawals[withIndex].status = 'rejected';
-            user.mainBalance += user.withdrawals[withIndex].amount;
-        }
-
-        await user.save();
-        res.json({ success: true, message: action === 'approve' ? "Withdrawal Approved!" : "Withdrawal Rejected & Refunded!" });
-    } catch (err) { res.json({ success: false, message: "Server Error" }); }
+    const user = await User.findOne({ "withdrawals.id": req.body.requestId });
+    const withdraw = user.withdrawals.find(w => w.id === req.body.requestId);
+    if (req.body.action === 'approve') { withdraw.status = 'approved'; } 
+    else { withdraw.status = 'rejected'; user.mainBalance += withdraw.amount; }
+    await user.save();
+    res.json({ success: true, message: `Withdrawal ${req.body.action}d!` });
 });
 
 // ==========================================
-// 🌟 4. GAME STATUS API (Timer Setup) 🌟
+// 🌟 3. GAME LOGIC & MANUAL CONTROL 🌟
 // ==========================================
+let liveHistory = [
+    { period: 0, number: 3, color: 'Green' },
+    { period: 0, number: 8, color: 'Red' },
+    { period: 0, number: 0, color: 'Violet' }
+];
+let currentActivePeriod = Math.floor(Date.now() / 60000);
+let adminNextResult = null;
+
+app.post('/admin/set-game-result', (req, res) => {
+    const { color, number } = req.body;
+    adminNextResult = { color, number };
+    res.json({ success: true, message: `Next Result Fixed: ${color} (${number})` });
+});
+
 app.get('/game-status', (req, res) => {
     const now = new Date();
-    const seconds = now.getSeconds();
-    const remainingTime = 60 - seconds;
-    const period = Math.floor(now.getTime() / 60000);
+    const remainingTime = 60 - now.getSeconds();
+    const actualPeriod = Math.floor(now.getTime() / 60000);
 
-    res.json({
-        period: period,
-        time: remainingTime,
-        results: [
-            { period: period - 1, number: 3, color: 'Green' },
-            { period: period - 2, number: 8, color: 'Red' },
-            { period: period - 3, number: 0, color: 'Violet' }
-        ]
-    });
+    if (actualPeriod > currentActivePeriod) {
+        let finalColor = 'Red';
+        let finalNumber = 2;
+
+        if (adminNextResult) {
+            finalColor = adminNextResult.color;
+            finalNumber = adminNextResult.number;
+            adminNextResult = null;
+        } else {
+            finalNumber = Math.floor(Math.random() * 10);
+            if (finalNumber === 0 || finalNumber === 5) finalColor = 'Violet';
+            else if (finalNumber % 2 === 0) finalColor = 'Red';
+            else finalColor = 'Green';
+        }
+
+        liveHistory.unshift({ period: currentActivePeriod, number: finalNumber, color: finalColor });
+        if (liveHistory.length > 10) liveHistory.pop();
+        currentActivePeriod = actualPeriod;
+    }
+
+    res.json({ period: actualPeriod, time: remainingTime, results: liveHistory });
 });
 
-// STARTING THE SERVER
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server is running on port ${PORT}`));
