@@ -75,32 +75,7 @@ app.post('/withdraw-request', async (req, res) => {
 });
 
 // ==========================================
-// 🌟 2. GAME BETTING LOGIC 🌟
-// ==========================================
-let currentPeriodBets = []; // Live bets store karne ke liye
-
-app.post('/bet', async (req, res) => {
-    try {
-        const { mobile, betSelection, betAmount, period } = req.body;
-        const user = await User.findOne({ mobile });
-        
-        if (!user || user.mainBalance < betAmount) {
-            return res.json({ success: false, message: "Insufficient Balance!" });
-        }
-
-        user.mainBalance -= betAmount;
-        user.gameHistory.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
-        await user.save();
-
-        // Admin dashboard ke liye live bet save karna
-        currentPeriodBets.push({ selection: betSelection, amount: betAmount });
-
-        res.json({ success: true, balance: user.mainBalance, message: "Bet Placed!" });
-    } catch (err) { res.json({ success: false, message: "Server Error" }); }
-});
-
-// ==========================================
-// 🌟 3. ADMIN PANEL APIs 🌟
+// 🌟 2. ADMIN PANEL APIs 🌟
 // ==========================================
 app.get('/admin/users', async (req, res) => {
     const users = await User.find({}, { password: 0 }).sort({ _id: -1 });
@@ -138,42 +113,32 @@ app.post('/admin/approve-withdraw', async (req, res) => {
 });
 
 // ==========================================
-// 🌟 4. GAME LOGIC & MANUAL CONTROL 🌟
+// 🌟 3. SERVER-SIDE GAME LOOP (24/7) 🌟
 // ==========================================
-let liveHistory = [
-    { period: 0, number: 3, color: 'Green', size: 'Small' },
-    { period: 0, number: 8, color: 'Red', size: 'Big' },
-    { period: 0, number: 0, color: 'Violet', size: 'Small' }
-];
 let currentActivePeriod = Math.floor(Date.now() / 60000);
+let liveHistory = [];
+let currentPeriodBets = [];
 let adminNextResult = null;
 
-// New Admin Set Result Route (Color, Number, Size)
-app.post('/admin/set-game-result', (req, res) => {
-    const { type, value } = req.body; 
-    adminNextResult = { type, value };
-    res.json({ success: true, message: `Next Result Fixed: ${value}` });
-});
+// Populate initial 10 records so history is never empty on server start
+let initialP = currentActivePeriod - 10;
+for (let i = 0; i < 10; i++) {
+    let n = Math.floor(Math.random() * 10);
+    let c = (n === 0 || n === 5) ? 'Violet' : (n % 2 === 0 ? 'Red' : 'Green');
+    let s = n > 4 ? 'Big' : 'Small';
+    liveHistory.unshift({ period: initialP + i, number: n, color: c, size: s });
+}
 
-// Admin Live Data Route
-app.get('/admin/live-game-data', (req, res) => {
-    let betTotals = { Green: 0, Violet: 0, Red: 0, Big: 0, Small: 0, '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8':0, '9':0 };
-    currentPeriodBets.forEach(b => {
-        if(betTotals[b.selection] !== undefined) betTotals[b.selection] += b.amount;
-    });
-    res.json({ success: true, period: currentActivePeriod, history: liveHistory, bets: betTotals, nextForce: adminNextResult });
-});
-
-app.get('/game-status', (req, res) => {
-    const now = new Date();
-    const remainingTime = 60 - now.getSeconds();
-    const actualPeriod = Math.floor(now.getTime() / 60000);
-
+// 🟢 THE MASTER GAME CLOCK (Runs every 1 second continuously) 🟢
+setInterval(() => {
+    const actualPeriod = Math.floor(Date.now() / 60000);
+    
+    // Agar 1 minute poora ho gaya, toh naya result nikalo
     if (actualPeriod > currentActivePeriod) {
         let finalNumber = 2;
 
-        // Force Result Logic
         if (adminNextResult) {
+            // Admin Forced Result
             if(adminNextResult.type === 'number') {
                 finalNumber = parseInt(adminNextResult.value);
             } else if (adminNextResult.type === 'color') {
@@ -183,27 +148,81 @@ app.get('/game-status', (req, res) => {
                 let opts = adminNextResult.value === 'Big' ? [5,6,7,8,9] : [0,1,2,3,4];
                 finalNumber = opts[Math.floor(Math.random() * opts.length)];
             }
-            adminNextResult = null; // Clear after use
+            adminNextResult = null; // Ek baar result aane ke baad clear kar do
         } else {
+            // Random System Result
             finalNumber = Math.floor(Math.random() * 10);
         }
 
-        // Determine Color & Size based on final number
         let finalColor = 'Green';
         if (finalNumber === 0 || finalNumber === 5) finalColor = 'Violet';
         else if (finalNumber % 2 === 0) finalColor = 'Red';
 
         let finalSize = finalNumber > 4 ? 'Big' : 'Small';
 
-        // Update history
+        // History me add karo
         liveHistory.unshift({ period: currentActivePeriod, number: finalNumber, color: finalColor, size: finalSize });
-        if (liveHistory.length > 10) liveHistory.pop();
+        if (liveHistory.length > 10) liveHistory.pop(); // Sirf last 10 rakho
         
+        // Reset for NEW period
         currentActivePeriod = actualPeriod;
-        currentPeriodBets = []; // 🌟 Clear bets for new period 🌟
+        currentPeriodBets = []; // Naye round ke bet zero kar do
     }
+}, 1000);
 
-    res.json({ period: actualPeriod, time: remainingTime, results: liveHistory });
+// ==========================================
+// 🌟 4. GAME & ADMIN LIVE DATA APIs 🌟
+// ==========================================
+
+// Users ke bet lagane ki API
+app.post('/bet', async (req, res) => {
+    try {
+        const { mobile, betSelection, betAmount, period } = req.body;
+        const user = await User.findOne({ mobile });
+        
+        if (!user || user.mainBalance < betAmount) return res.json({ success: false, message: "Insufficient Balance!" });
+
+        user.mainBalance -= betAmount;
+        user.gameHistory.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
+        await user.save();
+
+        // Save bet in server memory for Admin live monitoring
+        currentPeriodBets.push({ selection: betSelection, amount: betAmount });
+
+        res.json({ success: true, balance: user.mainBalance, message: "Bet Placed Successfully!" });
+    } catch (err) { res.json({ success: false, message: "Server Error" }); }
+});
+
+// Admin Set Result API
+app.post('/admin/set-game-result', (req, res) => {
+    const { type, value } = req.body; 
+    adminNextResult = { type, value };
+    res.json({ success: true, message: `Fixed Next Winner: ${value}` });
+});
+
+// Admin Dashboard Live Data Fetch
+app.get('/admin/live-game-data', (req, res) => {
+    const remainingTime = 60 - new Date().getSeconds();
+    
+    let betTotals = { Green: 0, Violet: 0, Red: 0, Big: 0, Small: 0, '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8':0, '9':0 };
+    currentPeriodBets.forEach(b => {
+        if(betTotals[b.selection] !== undefined) betTotals[b.selection] += b.amount;
+    });
+    
+    res.json({ 
+        success: true, 
+        period: currentActivePeriod, 
+        time: remainingTime,
+        history: liveHistory, 
+        bets: betTotals, 
+        nextForce: adminNextResult 
+    });
+});
+
+// User Game App Data Fetch
+app.get('/game-status', (req, res) => {
+    const remainingTime = 60 - new Date().getSeconds();
+    res.json({ period: currentActivePeriod, time: remainingTime, results: liveHistory });
 });
 
 const PORT = process.env.PORT || 3000;
