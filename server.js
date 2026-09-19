@@ -30,25 +30,53 @@ const User = mongoose.model('User', userSchema);
 // ==========================================
 app.post('/register', async (req, res) => {
     try {
-        const { mobile, password } = req.body;
-        if (await User.findOne({ mobile })) return res.json({ success: false, message: "Mobile number already registered!" });
+        const { mobile, phone, password } = req.body;
+        const userMobile = mobile || phone;
+
+        if (!userMobile || !password) {
+            return res.json({ success: false, message: "Mobile number and password are required!" });
+        }
+
+        const existingUser = await User.findOne({ mobile: userMobile });
+        if (existingUser) {
+            return res.json({ success: false, message: "Mobile number already registered!" });
+        }
+
         const uniqueId = "UID" + Math.floor(1000000 + Math.random() * 9000000);
-        await new User({ mobile, password, uniqueId }).save();
+        const newUser = new User({ mobile: userMobile, password, uniqueId });
+        await newUser.save();
+
         res.json({ success: true, message: "Registration Successful!", uniqueId });
-    } catch (err) { res.json({ success: false, message: "Server Error" }); }
+    } catch (err) { 
+        console.error("Register Error:", err);
+        res.json({ success: false, message: err.message || "Server Error" }); 
+    }
 });
 
 app.post('/login', async (req, res) => {
     try {
-        const user = await User.findOne({ mobile: req.body.mobile, password: req.body.password });
-        if (user) res.json({ success: true, message: "Login Successful!" });
-        else res.json({ success: false, message: "Invalid Mobile or Password!" });
-    } catch (err) { res.json({ success: false, message: "Server Error" }); }
+        const { mobile, phone, password } = req.body;
+        const userMobile = mobile || phone;
+
+        if (!userMobile || !password) {
+            return res.json({ success: false, message: "Mobile number and password are required!" });
+        }
+
+        const user = await User.findOne({ mobile: userMobile, password });
+        if (user) {
+            res.json({ success: true, message: "Login Successful!", uniqueId: user.uniqueId });
+        } else {
+            res.json({ success: false, message: "Invalid Mobile or Password!" });
+        }
+    } catch (err) { 
+        console.error("Login Error:", err);
+        res.json({ success: false, message: err.message || "Server Error" }); 
+    }
 });
 
 app.post('/get-account-data', async (req, res) => {
     try {
-        const user = await User.findOne({ mobile: req.body.mobile });
+        const user = await User.findOne({ mobile: req.body.mobile || req.body.phone });
         if (user) res.json({ success: true, balance: user.mainBalance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance, uniqueId: user.uniqueId });
         else res.json({ success: false, message: "User not found" });
     } catch (err) { res.json({ success: false, message: "Server Error" }); }
@@ -64,6 +92,7 @@ app.post('/deposit-request', async (req, res) => {
 app.post('/withdraw-request', async (req, res) => {
     try {
         const user = await User.findOne({ mobile: req.body.mobile });
+        if(!user) return res.json({ success: false, message: "User not found!" });
         if(user.mainBalance < req.body.amount) return res.json({ success: false, message: "Insufficient Balance!" });
         if(req.body.amount < 500) return res.json({ success: false, message: "Minimum withdrawal is ₹500" });
         
@@ -117,7 +146,7 @@ app.post('/admin/approve-withdraw', async (req, res) => {
 // ==========================================
 let currentActivePeriod = Math.floor(Date.now() / 60000);
 let liveHistory = [];
-let currentPeriodBets = []; // Stores detailed bets: { mobile, selection, amount, period }
+let currentPeriodBets = []; 
 let adminNextResult = null;
 
 let initialP = currentActivePeriod - 10;
@@ -129,7 +158,6 @@ for (let i = 0; i < 10; i++) {
 }
 
 function calculateWinningResult(currentBetsArray, adminForcedResult = null) {
-    // Convert array to summary totals for liability check
     let currentBets = { Green: 0, Violet: 0, Red: 0, Big: 0, Small: 0, '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8':0, '9':0 };
     currentBetsArray.forEach(b => {
         if(currentBets[b.selection] !== undefined) currentBets[b.selection] += b.amount;
@@ -194,11 +222,9 @@ setInterval(async () => {
     const actualPeriod = Math.floor(Date.now() / 60000);
     if (actualPeriod > currentActivePeriod) {
         
-        // 1. Calculate Winning Result using Smart Logic
         const result = calculateWinningResult(currentPeriodBets, adminNextResult);
         adminNextResult = null;
 
-        // 2. Process all user bets for the ending period and update balances
         for (let bet of currentPeriodBets) {
             try {
                 let user = await User.findOne({ mobile: bet.mobile });
@@ -207,7 +233,6 @@ setInterval(async () => {
                 let won = false;
                 let multiplier = 0;
 
-                // Check winning conditions
                 if (bet.selection === result.number.toString()) { won = true; multiplier = 9; }
                 else if (bet.selection === result.color) { 
                     won = true; 
@@ -230,11 +255,9 @@ setInterval(async () => {
             }
         }
 
-        // 3. Add to History
         liveHistory.unshift({ period: currentActivePeriod, number: result.number, color: result.color, size: result.size });
         if (liveHistory.length > 10) liveHistory.pop();
         
-        // 4. Reset for NEW period
         currentActivePeriod = actualPeriod;
         currentPeriodBets = [];
     }
@@ -253,7 +276,6 @@ app.post('/bet', async (req, res) => {
         user.gameHistory.push({ period, selection: betSelection, amount: betAmount, status: 'Pending' });
         await user.save();
 
-        // Push detailed bet object for processing payout later
         currentPeriodBets.push({ mobile, selection: betSelection, amount: betAmount, period });
 
         res.json({ success: true, balance: user.mainBalance, message: "Bet Placed Successfully!" });
@@ -288,6 +310,10 @@ app.get('/admin/live-game-data', (req, res) => {
 app.get('/game-status', (req, res) => {
     const remainingTime = 60 - new Date().getSeconds();
     res.json({ period: currentActivePeriod, time: remainingTime, results: liveHistory });
+});
+
+app.get('/', (req, res) => {
+    res.send("Live Game Backend is Running!");
 });
 
 const PORT = process.env.PORT || 3000;
