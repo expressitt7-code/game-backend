@@ -8,7 +8,7 @@ app.use(cors());
 
 // 🌟 MONGODB CONNECTION 🌟
 const DB_URL = "mongodb+srv://New_admin:h2VMUsM7a3W39J4E@cluster0.ydaktjx.mongodb.net/?appName=Cluster0";
-mongoose.connect(DB_URL, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(DB_URL)
 .then(() => console.log("✅ Database Connected Successfully!"))
 .catch(err => console.log("❌ Database Connection Error: ", err));
 
@@ -24,6 +24,14 @@ const userSchema = new mongoose.Schema({
     gameHistory: [{ period: Number, selection: String, amount: Number, status: String }]
 });
 const User = mongoose.model('User', userSchema);
+
+const ResultSchema = new mongoose.Schema({
+    period: { type: Number, required: true, unique: true },
+    number: Number,
+    color: String,
+    size: String
+});
+const Result = mongoose.model('Result', ResultSchema);
 
 // ==========================================
 // 🌟 1. AUTHENTICATION & USERS APIs 🌟
@@ -43,7 +51,7 @@ app.post('/register', async (req, res) => {
         }
 
         const uniqueId = "UID" + Math.floor(1000000 + Math.random() * 9000000);
-        const newUser = new User({ mobile: userMobile, password, uniqueId });
+        const newUser = new User({ mobile: userMobile, password, uniqueId, mainBalance: 1000.00 });
         await newUser.save();
 
         res.json({ success: true, message: "Registration Successful!", uniqueId });
@@ -77,27 +85,41 @@ app.post('/login', async (req, res) => {
 app.post('/get-account-data', async (req, res) => {
     try {
         const user = await User.findOne({ mobile: req.body.mobile || req.body.phone });
-        if (user) res.json({ success: true, balance: user.mainBalance, depositBalance: user.depositBalance, bonusBalance: user.bonusBalance, uniqueId: user.uniqueId });
-        else res.json({ success: false, message: "User not found" });
+        if (user) {
+            res.json({ 
+                success: true, 
+                balance: user.mainBalance, 
+                depositBalance: user.depositBalance, 
+                bonusBalance: user.bonusBalance, 
+                uniqueId: user.uniqueId,
+                deposits: user.deposits,
+                withdrawals: user.withdrawals,
+                gameHistory: user.gameHistory
+            });
+        } else {
+            res.json({ success: false, message: "User not found" });
+        }
     } catch (err) { res.json({ success: false, message: "Server Error" }); }
 });
 
 app.post('/deposit-request', async (req, res) => {
     try {
-        await User.updateOne({ mobile: req.body.mobile }, { $push: { deposits: { id: "DEP" + Date.now(), amount: req.body.amount, utr: req.body.utr, date: new Date().toLocaleString(), status: 'pending' } } });
+        const { mobile, amount, utr } = req.body;
+        await User.updateOne({ mobile }, { $push: { deposits: { id: "DEP" + Date.now(), amount, utr, date: new Date().toLocaleString(), status: 'pending' } } });
         res.json({ success: true, message: "Deposit request submitted. Awaiting Admin Approval." });
     } catch (err) { res.json({ success: false, message: "Error" }); }
 });
 
 app.post('/withdraw-request', async (req, res) => {
     try {
-        const user = await User.findOne({ mobile: req.body.mobile });
+        const { mobile, amount, upiId } = req.body;
+        const user = await User.findOne({ mobile });
         if(!user) return res.json({ success: false, message: "User not found!" });
-        if(user.mainBalance < req.body.amount) return res.json({ success: false, message: "Insufficient Balance!" });
-        if(req.body.amount < 500) return res.json({ success: false, message: "Minimum withdrawal is ₹500" });
+        if(user.mainBalance < amount) return res.json({ success: false, message: "Insufficient Balance!" });
+        if(amount < 500) return res.json({ success: false, message: "Minimum withdrawal is ₹500" });
         
-        user.mainBalance -= req.body.amount;
-        user.withdrawals.push({ id: "WID" + Date.now(), amount: req.body.amount, upiId: req.body.upiId, date: new Date().toLocaleString(), status: 'pending' });
+        user.mainBalance -= amount;
+        user.withdrawals.push({ id: "WID" + Date.now(), amount, upiId, date: new Date().toLocaleString(), status: 'pending' });
         await user.save();
         res.json({ success: true, message: "Withdrawal request submitted." });
     } catch (err) { res.json({ success: false, message: "Error" }); }
@@ -107,38 +129,64 @@ app.post('/withdraw-request', async (req, res) => {
 // 🌟 2. ADMIN PANEL APIs 🌟
 // ==========================================
 app.get('/admin/users', async (req, res) => {
-    const users = await User.find({}).sort({ _id: -1 });
-    res.json({ success: true, users });
+    try {
+        const users = await User.find({}).sort({ _id: -1 });
+        res.json({ success: true, users });
+    } catch(err) { res.json({ success: false, users: [] }); }
 });
+
 app.get('/admin/pending-deposits', async (req, res) => {
-    const users = await User.find({ "deposits.status": "pending" });
-    let requests = [];
-    users.forEach(u => u.deposits.filter(d => d.status === 'pending').forEach(d => requests.push({ mobile: u.mobile, ...d._doc })));
-    res.json({ success: true, requests });
+    try {
+        const users = await User.find({ "deposits.status": "pending" });
+        let requests = [];
+        users.forEach(u => u.deposits.filter(d => d.status === 'pending').forEach(d => requests.push({ mobile: u.mobile, ...d._doc })));
+        res.json({ success: true, requests });
+    } catch(err) { res.json({ success: true, requests: [] }); }
 });
+
 app.get('/admin/pending-withdrawals', async (req, res) => {
-    const users = await User.find({ "withdrawals.status": "pending" });
-    let requests = [];
-    users.forEach(u => u.withdrawals.filter(w => w.status === 'pending').forEach(w => requests.push({ mobile: u.mobile, ...w._doc })));
-    res.json({ success: true, requests });
+    try {
+        const users = await User.find({ "withdrawals.status": "pending" });
+        let requests = [];
+        users.forEach(u => u.withdrawals.filter(w => w.status === 'pending').forEach(w => requests.push({ mobile: u.mobile, ...w._doc })));
+        res.json({ success: true, requests });
+    } catch(err) { res.json({ success: true, requests: [] }); }
 });
 
 app.post('/admin/approve-deposit', async (req, res) => {
-    const user = await User.findOne({ "deposits.id": req.body.requestId });
-    const deposit = user.deposits.find(d => d.id === req.body.requestId);
-    if (req.body.action === 'approve') { deposit.status = 'approved'; user.mainBalance += deposit.amount; } 
-    else { deposit.status = 'rejected'; }
-    await user.save();
-    res.json({ success: true, message: `Deposit ${req.body.action}d successfully!` });
+    try {
+        const { requestId, action } = req.body;
+        const user = await User.findOne({ "deposits.id": requestId });
+        if(!user) return res.json({ success: false, message: "Deposit not found" });
+        
+        const deposit = user.deposits.find(d => d.id === requestId);
+        if (action === 'approve') { 
+            deposit.status = 'approved'; 
+            user.mainBalance += deposit.amount; 
+        } else { 
+            deposit.status = 'rejected'; 
+        }
+        await user.save();
+        res.json({ success: true, message: `Deposit ${action}d successfully!` });
+    } catch(e) { res.json({ success: false, message: "Server Error" }); }
 });
 
 app.post('/admin/approve-withdraw', async (req, res) => {
-    const user = await User.findOne({ "withdrawals.id": req.body.requestId });
-    const withdraw = user.withdrawals.find(w => w.id === req.body.requestId);
-    if (req.body.action === 'approve') { withdraw.status = 'approved'; } 
-    else { withdraw.status = 'rejected'; user.mainBalance += withdraw.amount; }
-    await user.save();
-    res.json({ success: true, message: `Withdrawal ${req.body.action}d!` });
+    try {
+        const { requestId, action } = req.body;
+        const user = await User.findOne({ "withdrawals.id": requestId });
+        if(!user) return res.json({ success: false, message: "Withdrawal not found" });
+
+        const withdraw = user.withdrawals.find(w => w.id === requestId);
+        if (action === 'approve') { 
+            withdraw.status = 'approved'; 
+        } else { 
+            withdraw.status = 'rejected'; 
+            user.mainBalance += withdraw.amount; // Refund on rejection
+        }
+        await user.save();
+        res.json({ success: true, message: `Withdrawal ${action}d!` });
+    } catch(e) { res.json({ success: false, message: "Server Error" }); }
 });
 
 // ==========================================
@@ -149,13 +197,25 @@ let liveHistory = [];
 let currentPeriodBets = []; 
 let adminNextResult = null;
 
-let initialP = currentActivePeriod - 10;
-for (let i = 0; i < 10; i++) {
-    let n = Math.floor(Math.random() * 10);
-    let c = (n === 0 || n === 5) ? 'Violet' : (n % 2 === 0 ? 'Red' : 'Green');
-    let s = n > 4 ? 'Big' : 'Small';
-    liveHistory.unshift({ period: initialP + i, number: n, color: c, size: s });
+// Database se purani history load karna
+async function loadHistory() {
+    try {
+        const pastResults = await Result.find().sort({ period: -1 }).limit(10);
+        if (pastResults.length > 0) {
+            liveHistory = pastResults.map(r => ({ period: r.period, number: r.number, color: r.color, size: r.size }));
+            currentActivePeriod = Math.floor(Date.now() / 60000); 
+        } else {
+            let initialP = currentActivePeriod - 10;
+            for (let i = 0; i < 10; i++) {
+                let n = Math.floor(Math.random() * 10);
+                let c = (n === 0 || n === 5) ? 'Violet' : (n % 2 === 0 ? 'Red' : 'Green');
+                let s = n > 4 ? 'Big' : 'Small';
+                liveHistory.unshift({ period: initialP + i, number: n, color: c, size: s });
+            }
+        }
+    } catch (err) { console.log("History load error"); }
 }
+loadHistory();
 
 function calculateWinningResult(currentBetsArray, adminForcedResult = null) {
     let currentBets = { Green: 0, Violet: 0, Red: 0, Big: 0, Small: 0, '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8':0, '9':0 };
@@ -255,6 +315,12 @@ setInterval(async () => {
             }
         }
 
+        // Save Result in DB
+        try {
+            const newRes = new Result({ period: currentActivePeriod, number: result.number, color: result.color, size: result.size });
+            await newRes.save();
+        } catch(e) {}
+
         liveHistory.unshift({ period: currentActivePeriod, number: result.number, color: result.color, size: result.size });
         if (liveHistory.length > 10) liveHistory.pop();
         
@@ -313,8 +379,8 @@ app.get('/game-status', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send("Live Game Backend is Running!");
+    res.send("🚀 Live Game Backend is Running!");
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server is running on port ${PORT}`));
